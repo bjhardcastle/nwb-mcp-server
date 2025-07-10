@@ -1,0 +1,12 @@
+# Init
+-> needs list of NWB files
+-> optional list of tables to use
+- create pl.SQLContext on connection (-> clear memory on exit)
+
+# Tools (expected to perform computation and have side effects)
+- get list of NWB files
+- get available tables
+- get table schema
+
+# Resources (provide data but shouldn't perform significant computation or have side effects)
+- execute SQL query (-> df as json)

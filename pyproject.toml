@@ -1,0 +1,17 @@
+[project]
+name = "nwb-mcp-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "bjhardcastle", email = "ben.hardcastle@alleninstitute.org" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "lazynwb>=0.2.59",
+    "mcp[cli]>=1.11.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
