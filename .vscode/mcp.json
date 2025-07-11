@@ -1,9 +1,10 @@
     {
         "servers": {
             "nwb": {
-                "command": "python",
+                "command": "uv",
                 "args": [
-                    "C:/Users/ben.hardcastle/github/mcp-server-nwb/src/nwb_mcp_server/server.py"
+                    "run",
+                    "src/nwb_mcp_server/server.py"
                 ]
             }
         }
