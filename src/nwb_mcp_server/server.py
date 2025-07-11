@@ -48,7 +48,7 @@ server.search_dir="data"
 server.nwb_file_glob="*.nwb"
 server.tables=()
 
-@server.resource("tables://list")
+@server.tool()
 async def get_tables() -> list[str]:
     """Get the list of available tables in the db."""
     ctx: Context = server.get_context()
