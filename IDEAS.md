@@ -26,7 +26,8 @@
 
 # Vision 
 - user can throw out a hypothesis in natural language (in teams, say)
-- multiple agents can run, in parallel, 24/7
+- multiple agents can run, in parallel, 24/7, they're fast, expert users of all the tools and
+  techniques, don't get tired
 - agents can generate their own hypotheses based on previous findings
 
 # Questions for discussion (or to investigate and pre-emptively answer)
