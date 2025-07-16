@@ -40,3 +40,8 @@
 - how much would it cost if using an API?
 - can we run it in codeocean as a streamlit app or similar (instead of in VScode)?
 
+
+# Prompts:
+- "summarize performance in these sessions"
+- "test the hypothesis that performance gets worse with age. consider the effect of performance
+  individuals over sessions (age is negligible from first session to last)"

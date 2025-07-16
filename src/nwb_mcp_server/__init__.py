@@ -1,10 +1,7 @@
-import asyncio
 import argparse
 
-# from mcp_server_nwb import server
 
-
-def main():
+def parse_args():
     """Main entry point for the package."""
     parser = argparse.ArgumentParser(description='NWB MCP Server')
     parser.add_argument(
