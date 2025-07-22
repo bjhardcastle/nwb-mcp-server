@@ -1,3 +1,5 @@
+[MCP Tool Output Standard for Tabular Data](https://github.com/modelcontextprotocol/modelcontextprotocol/discussions/930)
+
 # Intro
 - brief timeline of Copilot tools in VSCode (auto-complete, small-snippets, large-scale edits, agent mode)
 - discussed with Corbett in 2023 the idea of natural-language analysis (Minority Report style -

@@ -1,20 +1,28 @@
     {
         "servers": {
-            "nwb": {
+            "local_nwb": {
                 "command": "uv",
                 "args": [
                     "run",
                     "src/nwb_mcp_server/server.py",
-                    "--search-dir",
-                    // "s3://aind-scratch-data/dynamic-routing/cache/nwb/v0.0.268",
-                   
-                    "--tables",
-                    "performance",
-                    "session",
-                    "subject",
-                    "--infer-schema-length",
-                    "1",
+                    "--root-dir",
+                    "data",
                 ]
-            }
+            },
+            // "s3_nwb": {
+            //     "command": "uv",
+            //     "args": [
+            //         "run",
+            //         "src/nwb_mcp_server/server.py",
+            //         "--root-dir",
+            //         "s3://aind-scratch-data/dynamic-routing/cache/nwb/v0.0.268",
+            //         "--tables",
+            //         "performance",
+            //         "session",
+            //         "subject",
+            //         "--infer-schema-length",
+            //         "1",
+            //     ]
+            // }
         }
     }
