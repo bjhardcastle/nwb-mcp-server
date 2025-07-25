@@ -41,15 +41,6 @@ def parse_args() -> argparse.Namespace:
 
 args = parse_args()
 
-INSTRUCTIONS = f"""
-
-1. Please use upath (`universal-pathlib` Python package) to search for NWB files
-   in {args.root_dir!r} with the glob pattern {args.glob_pattern!r}.
-2. Once you have found the NWB files, you can use the following tools to interact with them:
-   - `get_tables`: Get a list of available tables in the NWB files.
-   - `get_table_schema`: Get the schema of a specific table.
-   - `nwb_file_search_parameters`: Get the search parameters used to find the NWB files.
-"""
 
 @dataclasses.dataclass
 class AppContext:
@@ -59,6 +50,19 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     """Used to find NWB files in the filesystem."""
     root_dir: str
     glob_pattern: str
+
+INSTRUCTIONS = f"""
+The goal is to create Python code that runs data analysis to answer the user's questions and
+produces a report with the results.
+1. Please use upath (`universal-pathlib` Python package) to search for NWB files
+   in {args.root_dir!r} with the glob pattern {args.glob_pattern!r}.
+2. Once you have found the NWB files, use `polars` to interact with tables in them:
+a. Get a polars LazyFrame for table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
+b. Write queries against the LazyFrame using standard `pl.LazyFrame` methods.
+c. Use `.filter()` as appropriate to avoid loading rows into memory.
+d. Use `.select()` to choose specific columns to include in the final result and avoid loading unnecessary data.
+e. Use `lf.collect()` to execute the query and get a polars DataFrame.
+"""
 
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
@@ -85,6 +89,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
 server = fastmcp.FastMCP(
     name="nwb-mcp-server",
     lifespan=server_lifespan,
+    instructions=INSTRUCTIONS,
 )
 server.root_dir = upath.UPath(args.root_dir).resolve().as_posix()
 server.glob_pattern = args.glob_pattern
@@ -93,13 +98,14 @@ server.infer_schema_length = args.infer_schema_length
 
 @server.tool()
 async def get_tables(ctx: fastmcp.Context) -> list[str]:
-    """Get the list of SQL tables available in the NWB database. Each table corresponds to a concatenated data from multiple NWB files"""        
+    """Returns a list of available tables in the NWB files. Each table includes data from multiple
+    NWB files, where one file includes data from a single session for a single subject."""
     await ctx.info("Fetching available tables from NWB files")
     return await asyncio.to_thread(ctx.request_context.lifespan_context.db.tables)
 
 @server.tool()
 async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.DataType]:
-    """Get the schema of a specific table in the NWB database, using polars ."""
+    """Returns the schema of a specific table, mapping column names to their data types."""
     if not table_name:
         raise ValueError("Table name cannot be empty")
     await ctx.info(f"Fetching schema for table: {table_name}")
@@ -116,19 +122,21 @@ async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParam
 
 @server.tool()
 async def get_nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
-    """Provides a directory path and a file glob pattern for finding NWB files. Useful for creating
-    Python code that can locate the NWB files used by this server."""
+    """
+    Returns a directory path and a file glob pattern for finding NWB files.
+    
+    >>> nwb_files = list(upath.UPath(result.root_dir).glob(result.glob_pattern))
+    """
     resource = await ctx.read_resource("config://nwb_file_search_parameters")
     return NWBFileSearchParameters.model_validate_json(resource[0].content)
 
-# @server.tool()
-# async def get_nwb_paths() -> list[str]:
-#     """Get the list of NWB file paths that the server is currently using."""
-#     return [p.as_posix() for p in server.nwb_sources]
 
 @server.tool(enabled=False)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
-    """Run a SQL query against the NWB database and return a dataframe as a JSON string."""
+    """(should be avoided as much as possible) Runs a SQL query against a virtual NWB database
+    and returns results as JSON. This should only be used when it's absolutely necessary to preview
+    the values in a table, and then only a small number of rows should be returned using
+    `LIMIT` in the query. Normally you should use `get_table_schema` to understand the structure of the data."""
     if not query:
         await ctx.error("No query provided")
         raise ValueError("Query cannot be empty")

@@ -25,6 +25,8 @@
     - providing metadata likely to be beneficial
 - a sensible API for NWB files was necessary to make this work
 - lazy-loading of NWB files is a must (pynwb is too slow, uses too much memory)
+- o4-mini is not good at interpreting available MCP servers/tools
+- instructions to FastMCP class are not followed in Copilot Chat
 
 # Vision 
 - user can throw out a hypothesis in natural language (in teams, say)
@@ -41,7 +43,7 @@
   - does the agent "aim to please" and cherry-pick, misrepresent, fabricate data?
 - how much would it cost if using an API?
 - can we run it in codeocean as a streamlit app or similar (instead of in VScode)?
-
+- benchmark against human experts
 
 # Prompts:
 - "summarize performance in these sessions"

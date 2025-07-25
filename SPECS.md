@@ -14,4 +14,4 @@
 # Resources (provide data but shouldn't perform significant computation or have side effects)
 ✅ get list of NWB files
 ✅ get available tables
--[ ] get table schema
+✅ get table schema
