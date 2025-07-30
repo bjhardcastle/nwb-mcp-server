@@ -16,3 +16,6 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[project.scripts]
+nwb_mcp_server = "nwb_mcp_server.server:main"

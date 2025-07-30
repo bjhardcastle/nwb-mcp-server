@@ -181,5 +181,8 @@ def nwb_paths() -> list[str]:
     """List the available NWB files."""
     return [p.as_posix() for p in args.nwb_sources]
 
-if __name__ == "__main__":
+def main() -> None:
     server.run()
+    
+if __name__ == "__main__":
+    main()
