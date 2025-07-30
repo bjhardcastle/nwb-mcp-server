@@ -10,7 +10,6 @@ import contextlib
 import dataclasses
 import io
 import logging
-import logging.handlers
 from typing import AsyncIterator
 
 import lazynwb
@@ -31,16 +30,18 @@ def parse_args() -> argparse.Namespace:
         '--root-dir', default="data", help='Root directory to search for NWB files',
     )
     parser.add_argument(
-        '--glob-pattern', default="*.nwb", help='A glob pattern to apply (non-recursively) to root-dir to locate NWB files (or folders), e.g. "*.zarr.nwb"',
+        '--glob-pattern', default="*.nwb", help='A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. "*.zarr.nwb"',
     )
     parser.add_argument('--tables', nargs='*', default=(), help='List of table names to use, where each table is the name of a data object within each NWB file, e.g ["trials", "units"]')
     parser.add_argument('--infer-schema-length', type=int, default=None, help='Number of NWB files to scan to infer schema for all files')
     
     args = parser.parse_args()
+    args.root_dir = upath.UPath(args.root_dir).resolve().as_posix()
+    args.nwb_sources = list(upath.UPath(args.root_dir).glob(args.glob_pattern))
+    # TODO add mutually exclusive group for glob pattern vs specific file paths vs Dandi dataset
     return args
 
 args = parse_args()
-
 
 @dataclasses.dataclass
 class AppContext:
@@ -52,15 +53,17 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     glob_pattern: str
 
 INSTRUCTIONS = f"""
-The goal is to create Python code that runs data analysis to answer the user's questions and
-produces a report with the results.
-1. Please use upath (`universal-pathlib` Python package) to search for NWB files
-   in {args.root_dir!r} with the glob pattern {args.glob_pattern!r}.
+This server provides a tools for previewing and working with NWB files.
+When writing Python code to interact with the NWB files, please follow these steps:
+1. use upath (`universal-pathlib` Python package) to search for NWB files:
+   `nwb_paths = list(upath.UPath({args.root_dir!r}).glob({args.glob_pattern!r}))`
+   If the path points to S3, the user may need to supply credentials to access it.
 2. Once you have found the NWB files, use `polars` to interact with tables in them:
 a. Get a polars LazyFrame for table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
 b. Write queries against the LazyFrame using standard `pl.LazyFrame` methods.
-c. Use `.filter()` as appropriate to avoid loading rows into memory.
-d. Use `.select()` to choose specific columns to include in the final result and avoid loading unnecessary data.
+c. Use `.filter()` as appropriate to avoid loading all rows into memory.
+d. Use `.select()` to choose specific columns to include in the final result and avoid loading
+   unnecessary columns, particularly array- or list-like columns.
 e. Use `lf.collect()` to execute the query and get a polars DataFrame.
 """
 
@@ -68,15 +71,14 @@ e. Use `lf.collect()` to execute the query and get a polars DataFrame.
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     """Manage server startup and shutdown lifecycle."""
     logger.info("Globbing for NWB files in search directory")
-    server.nwb_sources = list(upath.UPath(server.root_dir).glob(server.glob_pattern))
-    logger.info(f"Found {len(server.nwb_sources)} NWB files matching pattern '{server.root_dir}/{server.glob_pattern}'")
+    logger.info(f"Found {len(args.nwb_sources)} NWB files matching pattern '{args.root_dir}/{args.glob_pattern}'")
     # Initialize the SQL connection to the NWB files
     logger.info("Initializing SQL connection to NWB files (may take a while)")
     sql_context = await asyncio.to_thread(
         lazynwb.get_sql_context, 
-        nwb_sources=server.nwb_sources, 
-        infer_schema_length=server.infer_schema_length, 
-        table_names=server.tables or None, 
+        nwb_sources=args.nwb_sources, 
+        infer_schema_length=args.infer_schema_length, 
+        table_names=args.tables or None, 
         full_path=False, 
         disable_progress=True, 
         eager=False,
@@ -91,10 +93,6 @@ server = fastmcp.FastMCP(
     lifespan=server_lifespan,
     instructions=INSTRUCTIONS,
 )
-server.root_dir = upath.UPath(args.root_dir).resolve().as_posix()
-server.glob_pattern = args.glob_pattern
-server.tables = args.tables
-server.infer_schema_length = args.infer_schema_length
 
 @server.tool()
 async def get_tables(ctx: fastmcp.Context) -> list[str]:
@@ -116,8 +114,8 @@ async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, p
 @server.resource("config://nwb_file_search_parameters")
 async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
     return NWBFileSearchParameters(
-        root_dir=server.root_dir,
-        glob_pattern=server.glob_pattern,
+        root_dir=args.root_dir,
+        glob_pattern=args.glob_pattern,
     )
 
 @server.tool()
@@ -168,28 +166,20 @@ def _to_markdown(df: pl.DataFrame) -> str:
     return buf.read()
 
 @server.prompt()
-async def find_nwb_files(ctx: fastmcp.Context) -> str:
-    """Generates a user message asking for a specific way to search for NWB files"""
+async def generate_nwb_file_search_code(ctx: fastmcp.Context) -> str:
+    """Generates a user message asking for a specific way to search for NWB files with Python code."""
     resource  = await ctx.read_resource("config://nwb_file_search_parameters")
     search_parameters = NWBFileSearchParameters.model_validate_json(resource[0].content)
     logger.info(f"Got {search_parameters=!r}")
     return (
-        "Please use upath (`universal-pathlib` Python package) to search for NWB files "
-        f"in {search_parameters.root_dir!r} with the glob pattern {search_parameters.glob_pattern!r}."
-    )
-    return (
-        f"Please use the following code to search for NWB files:\n\n"
-        f"```python\n"
-        f"import upath\n"
-        f"\n"
-        f"nwb_root_dir = {search_parameters.root_dir!r}\n"
-        f"nwb_glob_pattern = {search_parameters.glob_pattern!r}\n"
-        f"\n"
-        f"nwb_files = list(upath.UPath(nwb_root_dir).glob(nwb_glob_pattern))\n"
-        f"print('Found {{len(nwb_files)}} NWB files matching {{nwb_root_dir}}/{{nwb_glob_pattern}}')\n"
-        f"```\n\n"
+        "Please use upath (`universal-pathlib` Python package) to search for NWB files as follows: "
+        f"`nwb_paths = list(upath.UPath({search_parameters.root_dir!r}).glob({search_parameters.glob_pattern!r}))`"
     )
            
-           
+@server.resource("dir://desktop")
+def nwb_paths() -> list[str]:
+    """List the available NWB files."""
+    return [p.as_posix() for p in args.nwb_sources]
+
 if __name__ == "__main__":
     server.run()
