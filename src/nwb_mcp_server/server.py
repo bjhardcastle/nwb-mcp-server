@@ -37,12 +37,14 @@ def parse_args() -> argparse.Namespace:
     
     args = parser.parse_args()
     args.root_dir = upath.UPath(args.root_dir).resolve().as_posix()
-    args.nwb_sources = list(upath.UPath(args.root_dir).glob(args.glob_pattern))
+    
+    logger.info(f"Using configuration: {args}")
+    
     # TODO add mutually exclusive group for glob pattern vs specific file paths vs Dandi dataset
+    args.nwb_sources = list(upath.UPath(args.root_dir).glob(args.glob_pattern))
     return args
 
 args = parse_args()
-logger.info(f"Using configuration: {args}")
 
 @dataclasses.dataclass
 class AppContext:
