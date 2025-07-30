@@ -30,10 +30,10 @@ def parse_args() -> argparse.Namespace:
         '--root-dir', default="data", help='Root directory to search for NWB files',
     )
     parser.add_argument(
-        '--glob-pattern', default="*.nwb", help='A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. "*.zarr.nwb"',
+        '--glob-pattern', default="**/*.nwb", help='A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. "*.zarr.nwb" [default "**/*.nwb"]',
     )
     parser.add_argument('--tables', nargs='*', default=(), help='List of table names to use, where each table is the name of a data object within each NWB file, e.g ["trials", "units"]')
-    parser.add_argument('--infer-schema-length', type=int, default=None, help='Number of NWB files to scan to infer schema for all files')
+    parser.add_argument('--infer-schema-length', type=int, default=1, help='Number of NWB files to scan to infer schema for all files [default 1]')
     
     args = parser.parse_args()
     args.root_dir = upath.UPath(args.root_dir).resolve().as_posix()
