@@ -86,6 +86,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
         disable_progress=True, 
         eager=False,
     )
+    logger.info("SQL connection initialized successfully")
     try:
         yield AppContext(db=sql_context)
     finally:
