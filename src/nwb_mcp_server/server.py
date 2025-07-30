@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 args = parse_args()
+logger.info(f"Using configuration: {args}")
 
 @dataclasses.dataclass
 class AppContext:
