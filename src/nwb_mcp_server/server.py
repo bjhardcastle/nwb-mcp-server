@@ -4,7 +4,6 @@
 #   "fastmcp",
 # ]
 # ///
-import argparse
 import asyncio
 import contextlib
 import dataclasses
@@ -15,36 +14,55 @@ from typing import AsyncIterator
 import lazynwb
 import polars as pl
 import pydantic
+import pydantic_settings
 import fastmcp
 import upath
 
-logger = logging.getLogger('__name__')
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 logger.info("Starting MCP NWB Server")
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='NWB MCP Server')
-    parser.add_argument(
-        '--root-dir', default="data", help='Root directory to search for NWB files',
+class Settings(
+    pydantic_settings.BaseSettings, 
+    cli_parse_args=True, 
+    cli_implicit_flags=True,
+    cli_ignore_unknown_args=True,
+):
+    """Settings for the NWB MCP Server."""
+    root_dir: str = pydantic.Field(
+        default="data",
+        description="Root directory to search for NWB files",
     )
-    parser.add_argument(
-        '--glob-pattern', default="**/*.nwb", help='A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. "*.zarr.nwb" [default "**/*.nwb"]',
+    glob_pattern: str = pydantic.Field(
+        default="**/*.nwb",
+        description="A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. '*.zarr.nwb'",
     )
-    parser.add_argument('--tables', nargs='*', default=(), help='List of table names to use, where each table is the name of a data object within each NWB file, e.g ["trials", "units"]')
-    parser.add_argument('--infer-schema-length', type=int, default=1, help='Number of NWB files to scan to infer schema for all files [default 1]')
-    
-    args = parser.parse_args()
-    args.root_dir = upath.UPath(args.root_dir).resolve().as_posix()
-    
-    logger.info(f"Using configuration: {args}")
-    
-    # TODO add mutually exclusive group for glob pattern vs specific file paths vs Dandi dataset
-    args.nwb_sources = list(upath.UPath(args.root_dir).glob(args.glob_pattern))
-    return args
+    tables: list[str] = pydantic.Field(
+        default_factory=list,
+        description="List of table names to use, where each table is the name of a data object within each NWB file, e.g ['trials', 'units']",
+    )
+    infer_schema_length: int = pydantic.Field(
+        default=1,
+        description="Number of NWB files to scan to infer schema for all files",
+    )
+    no_code: bool = pydantic.Field(
+        default=False,
+        description="The agent itself performs analysis rather than generating code for the user to run. Works best for simple analyses on smaller datasets.",
+    )
+    ignored_args: pydantic_settings.CliUnknownArgs
 
-args = parse_args()
+args = Settings()
+
+@functools.cache
+def get_nwb_sources() -> list[upath.UPath]:
+    """Get the list of NWB files based on the provided root directory and glob pattern."""
+    logger.info(f"Searching for NWB files in {args.root_dir} with pattern {args.glob_pattern}")
+    nwb_paths = list(upath.UPath(args.root_dir).glob(args.glob_pattern))
+    if not nwb_paths:
+        raise ValueError(f"No NWB files found in {args.root_dir} matching pattern {args.glob_pattern}")
+    logger.info(f"Found {len(nwb_paths)} NWB files")
+    return nwb_paths
 
 @dataclasses.dataclass
 class AppContext:
@@ -73,13 +91,11 @@ e. Use `lf.collect()` to execute the query and get a polars DataFrame.
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     """Manage server startup and shutdown lifecycle."""
-    logger.info("Globbing for NWB files in search directory")
-    logger.info(f"Found {len(args.nwb_sources)} NWB files matching pattern '{args.root_dir}/{args.glob_pattern}'")
     # Initialize the SQL connection to the NWB files
     logger.info("Initializing SQL connection to NWB files (may take a while)")
     sql_context = await asyncio.to_thread(
         lazynwb.get_sql_context, 
-        nwb_sources=args.nwb_sources, 
+        nwb_sources=get_nwb_sources(), 
         infer_schema_length=args.infer_schema_length, 
         table_names=args.tables or None, 
         full_path=False, 
@@ -133,12 +149,10 @@ async def get_nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchP
     return NWBFileSearchParameters.model_validate_json(resource[0].content)
 
 
-@server.tool(enabled=False)
+@server.tool(enabled=args.no_code)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
-    """(should be avoided as much as possible) Runs a SQL query against a virtual NWB database
-    and returns results as JSON. This should only be used when it's absolutely necessary to preview
-    the values in a table, and then only a small number of rows should be returned using
-    `LIMIT` in the query. Normally you should use `get_table_schema` to understand the structure of the data."""
+    """Executes a SQL query against a virtual read-only NWB database,
+    returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
     if not query:
         await ctx.error("No query provided")
         raise ValueError("Query cannot be empty")
@@ -183,7 +197,7 @@ async def generate_nwb_file_search_code(ctx: fastmcp.Context) -> str:
 @server.resource("dir://desktop")
 def nwb_paths() -> list[str]:
     """List the available NWB files."""
-    return [p.as_posix() for p in args.nwb_sources]
+    return [p.as_posix() for p in get_nwb_sources()]
 
 def main() -> None:
     server.run()
