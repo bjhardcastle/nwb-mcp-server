@@ -54,6 +54,7 @@ class Settings(
     ignored_args: pydantic_settings.CliUnknownArgs
 
 config = Settings() # type: ignore[call-arg]
+logger.info(f"Configuration loaded: {config}")
 
 @functools.cache
 def get_nwb_sources() -> list[upath.UPath]:
