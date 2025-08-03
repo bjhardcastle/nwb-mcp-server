@@ -24,13 +24,15 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 logger.info("Starting MCP NWB Server")
 
-class Settings(
-    pydantic_settings.BaseSettings, 
-    cli_parse_args=True, 
-    cli_implicit_flags=True,
-    cli_ignore_unknown_args=True,
-):
-    """Settings for the NWB MCP Server."""
+class ServerConfig(pydantic_settings.BaseSettings):
+    """Configuration for the NWB MCP Server."""
+    
+    model_config = pydantic_settings.SettingsConfigDict(
+        cli_parse_args=True,
+        cli_implicit_flags=True,
+        cli_ignore_unknown_args=True,
+    )
+
     root_dir: str = pydantic.Field(
         default="data",
         description="Root directory to search for NWB files",
@@ -53,7 +55,7 @@ class Settings(
     )
     ignored_args: pydantic_settings.CliUnknownArgs
 
-config = Settings() # type: ignore[call-arg]
+config = ServerConfig() # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
 
 @functools.cache
