@@ -10,7 +10,6 @@ requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=2.10.4",
     "lazynwb>=0.2.65",
-    "mcp[cli]>=1.11.0",
 ]
 
 [build-system]
