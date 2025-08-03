@@ -10,7 +10,7 @@ import dataclasses
 import io
 import functools
 import logging
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterable
 
 import lazynwb
 import polars as pl
@@ -53,15 +53,15 @@ class Settings(
     )
     ignored_args: pydantic_settings.CliUnknownArgs
 
-args = Settings() # type: ignore[call-arg]
+config = Settings() # type: ignore[call-arg]
 
 @functools.cache
 def get_nwb_sources() -> list[upath.UPath]:
     """Get the list of NWB files based on the provided root directory and glob pattern."""
-    logger.info(f"Searching for NWB files in {args.root_dir} with pattern {args.glob_pattern}")
-    nwb_paths = list(upath.UPath(args.root_dir).glob(args.glob_pattern))
+    logger.info(f"Searching for NWB files in {config.root_dir} with pattern {config.glob_pattern}")
+    nwb_paths = list(upath.UPath(config.root_dir).glob(config.glob_pattern))
     if not nwb_paths:
-        raise ValueError(f"No NWB files found in {args.root_dir} matching pattern {args.glob_pattern}")
+        raise ValueError(f"No NWB files found in {config.root_dir} matching pattern {config.glob_pattern}")
     logger.info(f"Found {len(nwb_paths)} NWB files")
     return nwb_paths
 
@@ -74,20 +74,28 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     root_dir: str
     glob_pattern: str
 
-INSTRUCTIONS = f"""
-This server provides a tools for previewing and working with NWB files.
-When writing Python code to interact with the NWB files, please follow these steps:
-1. use upath (`universal-pathlib` Python package) to search for NWB files:
-   `nwb_paths = list(upath.UPath({args.root_dir!r}).glob({args.glob_pattern!r}))`
-   If the path points to S3, the user may need to supply credentials to access it.
-2. Once you have found the NWB files, use `polars` to interact with tables in them:
-a. Get a polars LazyFrame for table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
-b. Write queries against the LazyFrame using standard `pl.LazyFrame` methods.
-c. Use `.filter()` as appropriate to avoid loading all rows into memory.
-d. Use `.select()` to choose specific columns to include in the final result and avoid loading
-   unnecessary columns, particularly array- or list-like columns.
-e. Use `lf.collect()` to execute the query and get a polars DataFrame.
-"""
+if config.no_code:
+    instructions = f"""
+    This server provides tools for querying a read-only virtual database of NWB data.
+    1. execute PostgresSQL queries against the NWB data using the `execute_query` tool.
+    a. Use standard SQL syntax, including `SELECT`, `FROM`, `WHERE`, `JOIN`, etc. and functions like `COUNT`, `AVG`, `SUM`, etc.
+    b. Do as much filtering as possible in the query to avoid loading all rows/columns into memory.
+    """
+else:
+    instructions = f"""
+    This server provides a tools for previewing and working with NWB files.
+    When writing Python code to interact with the NWB files, please follow these steps:
+    1. use upath (`universal-pathlib` Python package) to search for NWB files:
+    `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`
+    If the path points to S3, the user may need to supply credentials to access it.
+    2. Once you have found the NWB files, use `polars` to interact with tables in them:
+    a. Get a polars LazyFrame for table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
+    b. Write queries against the LazyFrame using standard `pl.LazyFrame` methods.
+    c. Use `.filter()` as appropriate to avoid loading all rows into memory.
+    d. Use `.select()` to choose specific columns to include in the final result and avoid loading
+    unnecessary columns, particularly array- or list-like columns.
+    e. Use `lf.collect()` to execute the query and get a polars DataFrame.
+    """
 
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
@@ -97,11 +105,13 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     sql_context = await asyncio.to_thread(
         lazynwb.get_sql_context, 
         nwb_sources=get_nwb_sources(), 
-        infer_schema_length=args.infer_schema_length, 
-        table_names=args.tables or None, 
-        full_path=False, 
-        disable_progress=True, 
-        eager=False,
+        infer_schema_length=config.infer_schema_length, 
+        table_names=config.tables or None,
+        exclude_timeseries=config.no_code,
+        full_path=False,  # NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
+        disable_progress=True,
+        eager=False,  # a LazyFrame is returned from `execute`
+        rename_general_metadata=True,  # renames the metadata in 'general' as 'session'
     )
     logger.info("SQL connection initialized successfully")
     try:
@@ -112,7 +122,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
 server = fastmcp.FastMCP(
     name="nwb-mcp-server",
     lifespan=server_lifespan,
-    instructions=INSTRUCTIONS,
+    instructions=instructions,
 )
 
 @server.tool()
@@ -135,11 +145,11 @@ async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, p
 @server.resource("config://nwb_file_search_parameters")
 async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
     return NWBFileSearchParameters(
-        root_dir=args.root_dir,
-        glob_pattern=args.glob_pattern,
+        root_dir=config.root_dir,
+        glob_pattern=config.glob_pattern,
     )
 
-@server.tool()
+@server.tool(enabled=False)
 async def get_nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
     """
     Returns a directory path and a file glob pattern for finding NWB files.
@@ -149,9 +159,20 @@ async def get_nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchP
     resource = await ctx.read_resource("config://nwb_file_search_parameters")
     return NWBFileSearchParameters.model_validate_json(resource[0].content)
 
-
-@server.tool(enabled=args.no_code)
+@server.tool(enabled=config.no_code)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
+    """Executes a SQL query against a virtual read-only NWB database,
+    returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
+    return await _execute_query(query, ctx)
+
+@server.tool(enabled=not config.no_code)
+async def preview_table_values(table: str, columns: Iterable[str], ctx: fastmcp.Context) -> str:
+    """Returns a preview of values from a specific table, limited to 5 rows. Likely will not include all
+    unique values as that can be expensive for large tables."""
+    query = f"SELECT {', '.join(columns)} FROM {table} LIMIT 5;"
+    return await _execute_query(query, ctx)
+
+async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
     if not query:
@@ -184,18 +205,7 @@ def _to_markdown(df: pl.DataFrame) -> str:
     buf.seek(0)
     return buf.read()
 
-@server.prompt()
-async def generate_nwb_file_search_code(ctx: fastmcp.Context) -> str:
-    """Generates a user message asking for a specific way to search for NWB files with Python code."""
-    resource  = await ctx.read_resource("config://nwb_file_search_parameters")
-    search_parameters = NWBFileSearchParameters.model_validate_json(resource[0].content)
-    logger.info(f"Got {search_parameters=!r}")
-    return (
-        "Please use upath (`universal-pathlib` Python package) to search for NWB files as follows: "
-        f"`nwb_paths = list(upath.UPath({search_parameters.root_dir!r}).glob({search_parameters.glob_pattern!r}))`"
-    )
-           
-@server.resource("dir://desktop")
+@server.resource("dir://nwb_paths")
 def nwb_paths() -> list[str]:
     """List the available NWB files."""
     return [p.as_posix() for p in get_nwb_sources()]
