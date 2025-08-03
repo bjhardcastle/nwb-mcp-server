@@ -61,7 +61,7 @@ def get_nwb_sources() -> list[upath.UPath]:
     logger.info(f"Searching for NWB files in {config.root_dir} with pattern {config.glob_pattern}")
     nwb_paths = list(upath.UPath(config.root_dir).glob(config.glob_pattern))
     if not nwb_paths:
-        raise ValueError(f"No NWB files found in {config.root_dir} matching pattern {config.glob_pattern}")
+        raise ValueError(f"No NWB files found in {config.root_dir!r} matching pattern {config.glob_pattern!r}")
     logger.info(f"Found {len(nwb_paths)} NWB files")
     return nwb_paths
 
