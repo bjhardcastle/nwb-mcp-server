@@ -132,7 +132,7 @@ server = fastmcp.FastMCP(
 async def get_tables(ctx: fastmcp.Context) -> list[str]:
     """Returns a list of available tables in the NWB files. Each table includes data from multiple
     NWB files, where one file includes data from a single session for a single subject."""
-    await ctx.info("Fetching available tables from NWB files")
+    logger.info("Fetching available tables from NWB files")
     return await asyncio.to_thread(ctx.request_context.lifespan_context.db.tables)
 
 @server.tool()
@@ -140,7 +140,7 @@ async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, p
     """Returns the schema of a specific table, mapping column names to their data types."""
     if not table_name:
         raise ValueError("Table name cannot be empty")
-    await ctx.info(f"Fetching schema for table: {table_name}")
+    logger.info(f"Fetching schema for table: {table_name}")
     query = f"SELECT * FROM {table_name} LIMIT 0"
     lf: pl.LazyFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query)
     return lf.schema
@@ -169,24 +169,33 @@ async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     return await _execute_query(query, ctx)
 
 @server.tool(enabled=not config.no_code)
-async def preview_table_values(table: str, columns: Iterable[str], ctx: fastmcp.Context) -> str:
-    """Returns a preview of values from a specific table, limited to 5 rows. Likely will not include all
-    unique values as that can be expensive for large tables."""
-    query = f"SELECT {', '.join(columns)} FROM {table} LIMIT 5;"
+async def preview_table_values(table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None) -> str:
+    """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
+    table schema. Only use this if absolutely necessary."""
+    if not table:
+        raise ValueError("Table name cannot be empty")
+    if not columns:
+        column_query = "*"
+    else:
+        if isinstance(columns, str):
+            columns = [columns]
+        column_query = ', '.join(repr(c) for c in columns)
+    assert column_query, "column query cannot be empty"
+    query = f"SELECT {column_query} FROM {table} LIMIT 1;"
+    logger.info(f"Previewing table values with: {column_query}")
     return await _execute_query(query, ctx)
 
 async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
     if not query:
-        await ctx.error("No query provided")
-        raise ValueError("Query cannot be empty")
-    await ctx.info(f"Executing query: {query}")
-    df: pl.DataFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query)
+        raise ValueError("SQL query cannot be empty")
+    logger.info(f"Executing query: {query}")
+    df: pl.DataFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query, eager=True)
     if df.is_empty():
-        await ctx.warning("Query returned no results")
+        logger.warning("SQL query returned no results")
         return "[]"
-    await ctx.info(f"Query executed successfully, serializing {len(df)} rows as JSON")
+    logger.info(f"Query executed successfully, serializing {len(df)} rows as JSON")
     # return _to_markdown(df)
     if 'obs_intervals' in df.columns:
         # lists of arrays cause JSON conversion to crash
