@@ -80,7 +80,7 @@ class NWBFileSearchParameters(pydantic.BaseModel):
 if config.no_code:
     instructions = f"""
     This server provides tools for querying a read-only virtual database of NWB data.
-    1. execute PostgresSQL queries against the NWB data using the `execute_query` tool.
+    1. execute PostgreSQL queries against the NWB data using the `execute_query` tool.
     a. Use standard SQL syntax, including `SELECT`, `FROM`, `WHERE`, `JOIN`, etc. and functions like `COUNT`, `AVG`, `SUM`, etc.
     b. Do as much filtering as possible in the query to avoid loading all rows/columns into memory.
     """
@@ -152,23 +152,13 @@ async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParam
         glob_pattern=config.glob_pattern,
     )
 
-@server.tool(enabled=False)
-async def get_nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
-    """
-    Returns a directory path and a file glob pattern for finding NWB files.
-    
-    >>> nwb_files = list(upath.UPath(result.root_dir).glob(result.glob_pattern))
-    """
-    resource = await ctx.read_resource("config://nwb_file_search_parameters")
-    return NWBFileSearchParameters.model_validate_json(resource[0].content)
-
 @server.tool(enabled=config.no_code)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
     return await _execute_query(query, ctx)
 
-@server.tool(enabled=not config.no_code)
+@server.tool(enabled=True)
 async def preview_table_values(table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None) -> str:
     """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
     table schema. Only use this if absolutely necessary."""
@@ -222,6 +212,60 @@ def nwb_paths() -> list[str]:
     """List the available NWB files."""
     return [p.as_posix() for p in get_nwb_sources()]
 
+@server.prompt
+def analysis_report_prompt(query: str) -> str:
+    """User prompt for creating an analysis report."""
+    rules = """        
+        Rules:
+        1. Do not write any code.
+        2. Provide details of any assumptions made.
+        3. Do not make things up.
+        4. Do not provide an excessively positive picture. Be objective. Be critical where appropriate.
+    """
+    
+    if config.no_code:
+        
+        return f"""
+        Please provide an analysis report for a scientist posing the following query:
+        {query!r}
+
+        {rules}
+        
+        Instructions for the analysis:
+        1. If necessary, ask clarifying questions to further understand the query and plan the analysis.
+        a. Questions should be enumerated so that the user can answer them one by one.
+        3. Develop a step-by-step plan for the analysis. 
+        4. Execute the analysis and provide a detailed report of the findings.
+        5. Do not create files with code to run. Only use the available tools to perform the
+        analysis.
+        
+        
+        About the server:
+        {instructions}
+        """
+    else:
+        return f"""
+        Your task is to write analysis code in Python for a scientist posing the following query:
+        {query!r}
+        
+        {rules}
+        
+        Instructions for the analysis:
+        1. Ask clarifying questions to understand the query and plan the analysis.
+        2. Explore the available tables to understand their schemas and relationships.
+        3. Develop a step-by-step plan for the Python code that will be written.
+        4. Write Python code that:
+        a. fetches data
+        b. runs any required pre-processing
+        c. generates relevant visualizations
+        d. performs any statistical analyses
+        e. summarizes the results
+        5. If the analysis is expected to take a long time, incorporate a test mode that runs the
+        analysis on a small subset of the data first. The user can then run the full analysis offline.
+        
+        About the server:
+        {instructions}
+        """
 def main() -> None:
     server.run()
     
