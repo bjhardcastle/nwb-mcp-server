@@ -4,17 +4,21 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "bjhardcastle", email = "ben.hardcastle@alleninstitute.org" }
+    { name = "bjhardcastle", email = "ben.hardcastle@alleninstitute.org" },
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "fastmcp>=2.10.4",
-    "lazynwb>=0.2.65",
-]
+dependencies = ["fastmcp>=2.10.4", "lazynwb>=0.2.65"]
+
+[tool.uv]
+package = true
+default-groups = "all"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+testing = ["pytest>=8.4.1"]
 
 [project.scripts]
 nwb-mcp-server = "nwb_mcp_server.server:main"

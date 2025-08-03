@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import dataclasses
 import io
+import functools
 import logging
 from typing import AsyncIterator
 
@@ -52,7 +53,7 @@ class Settings(
     )
     ignored_args: pydantic_settings.CliUnknownArgs
 
-args = Settings()
+args = Settings() # type: ignore[call-arg]
 
 @functools.cache
 def get_nwb_sources() -> list[upath.UPath]:
