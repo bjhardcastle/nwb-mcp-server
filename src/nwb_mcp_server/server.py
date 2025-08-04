@@ -53,6 +53,10 @@ class ServerConfig(pydantic_settings.BaseSettings):
         default=False,
         description="The agent itself performs analysis rather than generating code for the user to run. Works best for simple analyses on smaller datasets.",
     )
+    unattended: bool = pydantic.Field(
+        default=False,
+        description="Run the server in unattended mode, where it does not prompt the user for input. Useful for automated tasks.",
+    )
     ignored_args: pydantic_settings.CliUnknownArgs
 
 config = ServerConfig() # type: ignore[call-arg]
@@ -79,14 +83,15 @@ class NWBFileSearchParameters(pydantic.BaseModel):
 
 if config.no_code:
     instructions = f"""
-    This server provides tools for querying a read-only virtual database of NWB data.
+    This NWB MCP server provides tools for querying a read-only virtual database of NWB data.
     1. execute PostgreSQL queries against the NWB data using the `execute_query` tool.
     a. Use standard SQL syntax, including `SELECT`, `FROM`, `WHERE`, `JOIN`, etc. and functions like `COUNT`, `AVG`, `SUM`, etc.
     b. Do as much filtering as possible in the query to avoid loading all rows/columns into memory.
     """
 else:
     instructions = f"""
-    This server provides a tools for previewing and working with NWB files.
+    This NWB MCP server provides a tools for previewing and working with NWB files.
+    
     When writing Python code to interact with the NWB files, please follow these steps:
     1. use upath (`universal-pathlib` Python package) to search for NWB files:
     `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`
@@ -125,7 +130,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
 server = fastmcp.FastMCP(
     name="nwb-mcp-server",
     lifespan=server_lifespan,
-    instructions=instructions,
+    # instructions can be passed as a string, but does not appear to influence the agent (VScode) 
 )
 
 @server.tool()
@@ -215,43 +220,58 @@ def nwb_paths() -> list[str]:
 @server.prompt
 def analysis_report_prompt(query: str) -> str:
     """User prompt for creating an analysis report."""
-    rules = """        
-        Rules:
-        1. Do not write any code.
-        2. Provide details of any assumptions made.
-        3. Do not make things up.
-        4. Do not provide an excessively positive picture. Be objective. Be critical where appropriate.
+    rules = """
+        <rules>
+            1. Highlight any assumptions you make.
+            2. Explain how you averaged or aggregated data, if applicable.
+            3. Do not make things up.
+            4. Do not provide an excessively positive picture. Be objective. Be critical where
+               appropriate.
+        </rules>
     """
-    
+    if config.unattended:
+        user_input_prompt = """
+        Never prompt the user for clarifying questions or input. Make principled decisions to
+        achieve the most accurate and useful analysis.
+        """
+    else:
+        user_input_prompt = """
+        Ask the user clarifying questions to understand the query and plan the analysis.
+        Questions should be enumerated so that the user can answer them one by one.
+        """
     if config.no_code:
         
         return f"""
         Please provide an analysis report for a scientist posing the following query:
+        <query>
         {query!r}
+        </query>
 
         {rules}
         
-        Instructions for the analysis:
-        1. If necessary, ask clarifying questions to further understand the query and plan the analysis.
-        a. Questions should be enumerated so that the user can answer them one by one.
-        3. Develop a step-by-step plan for the analysis. 
-        4. Execute the analysis and provide a detailed report of the findings.
-        5. Do not create files with code to run. Only use the available tools to perform the
-        analysis.
+        <instructions>
+        1. {user_input_prompt}
+        2. Explore the available tables to understand their schemas and relationships.
+        3. Develop a step-by-step plan for the analysis.
+        4. Do not create files with code to run. 
+        5. Execute the analysis and provide a detailed report of the findings.
+        </instructions>
         
-        
-        About the server:
+        <mcp>
         {instructions}
+        </mcp>
         """
     else:
         return f"""
-        Your task is to write analysis code in Python for a scientist posing the following query:
+        Please write analysis code in Python for a scientist posing the following query:
+        <query>
         {query!r}
-        
+        </query>
+
         {rules}
-        
-        Instructions for the analysis:
-        1. Ask clarifying questions to understand the query and plan the analysis.
+
+        <instructions>
+        1. {user_input_prompt}
         2. Explore the available tables to understand their schemas and relationships.
         3. Develop a step-by-step plan for the Python code that will be written.
         4. Write Python code that:
@@ -262,9 +282,11 @@ def analysis_report_prompt(query: str) -> str:
         e. summarizes the results
         5. If the analysis is expected to take a long time, incorporate a test mode that runs the
         analysis on a small subset of the data first. The user can then run the full analysis offline.
-        
-        About the server:
+        </instructions>
+
+        <mcp>
         {instructions}
+        </mcp>
         """
 def main() -> None:
     server.run()
