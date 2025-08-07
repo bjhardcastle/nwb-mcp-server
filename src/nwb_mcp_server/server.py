@@ -7,6 +7,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import importlib.metadata
 import io
 import functools
 import logging
@@ -22,7 +23,7 @@ import upath
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
-logger.info("Starting MCP NWB Server")
+logger.info(f"Starting MCP NWB Server with lazynwb v{importlib.metadata.version('lazynwb')}")
 
 class ServerConfig(pydantic_settings.BaseSettings):
     """Configuration for the NWB MCP Server."""
