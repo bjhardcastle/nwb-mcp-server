@@ -143,7 +143,7 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     root_dir: str
     glob_pattern: str
 
-async def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
+def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
     """Create a SQLContext for non-NWB sources."""
     sources = tuple(sources)
     if not sources:
@@ -170,7 +170,7 @@ async def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLCo
             raise ValueError(f"Received a data source with no extension but is not a directory: {path}. Unsure how to continue.")
         read_func = getattr(pl, suffix_to_read_function[ext])
         frames[table_name] = read_func(path.as_posix())
-    return await asyncio.to_thread(pl.SQLContext, frames=frames, eager=False)
+    return pl.SQLContext(frames=frames, eager=False)
 
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
@@ -181,12 +181,11 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     if not any('.nwb' in str(s) for s in sources):
         # If no NWB files found, create a non-NWB SQLContext
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
-        sql_context = await create_sql_context_non_nwb(sources)
+        sql_context = create_sql_context_non_nwb(sources)
     else:
-        sql_context = await asyncio.to_thread(
-            lazynwb.get_sql_context, 
-            nwb_sources=sources, 
-            infer_schema_length=config.infer_schema_length, 
+        sql_context = lazynwb.get_sql_context(
+            nwb_sources=sources,
+            infer_schema_length=config.infer_schema_length,
             table_names=config.tables or None,
             exclude_timeseries=False,
             full_path=True,  # if False, NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
@@ -208,20 +207,20 @@ server = fastmcp.FastMCP(
 )
 
 @server.tool()
-async def get_tables(ctx: fastmcp.Context) -> list[str]:
+def get_tables(ctx: fastmcp.Context) -> list[str]:
     """Returns a list of available tables in the NWB files. Each table includes data from multiple
     NWB files, where one file includes data from a single session for a single subject."""
     logger.info("Fetching available tables from NWB files")
-    return await asyncio.to_thread(ctx.request_context.lifespan_context.db.tables)
+    return ctx.request_context.lifespan_context.db.tables()
 
 @server.tool()
-async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.DataType]:
+def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.DataType]:
     """Returns the schema of a specific table, mapping column names to their data types."""
     if not table_name:
         raise ValueError("Table name cannot be empty")
     logger.info(f"Fetching schema for table: {table_name}")
     query = f"SELECT * FROM {format_table_name(table_name)} LIMIT 0"
-    lf: pl.LazyFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query)
+    lf: pl.LazyFrame = ctx.request_context.lifespan_context.db.execute(query)
     return lf.schema
 
 @server.resource("config://nwb_file_search_parameters")
@@ -270,7 +269,7 @@ async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
     if not query:
         raise ValueError("SQL query cannot be empty")
     logger.info(f"Executing query: {query}")
-    df: pl.DataFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query, eager=True)
+    df: pl.DataFrame = ctx.request_context.lifespan_context.db.execute(query, eager=True)
     if df.is_empty():
         logger.warning("SQL query returned no results")
         return "[]"
