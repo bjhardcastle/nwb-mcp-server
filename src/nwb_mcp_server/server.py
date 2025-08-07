@@ -104,6 +104,9 @@ else:
     d. Use `.select()` to choose specific columns to include in the final result and avoid loading
     unnecessary columns, particularly array- or list-like columns.
     e. Use `lf.collect()` to execute the query and get a polars DataFrame.
+    3. Use the `default_qc` Boolean column in the `units` table, which indicates whether the unit
+    passed quality control checks.
+    4. The `session` or `general` tables may contain useful metadata about the session, such as `experiment_description`
     """
 
 @contextlib.asynccontextmanager
