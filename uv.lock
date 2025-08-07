@@ -609,7 +609,7 @@ wheels = [
 
 [[package]]
 name = "lazynwb"
-version = "0.2.67"
+version = "0.2.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h5py" },
@@ -622,9 +622,9 @@ dependencies = [
     { name = "zarr", version = "2.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "zarr", version = "3.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/32/176572a2f14f68023bd590157c25b52ea8769214e9915bc10917de3626b7/lazynwb-0.2.67.tar.gz", hash = "sha256:43580fd375b83aafc3daf8d2fc7c414a2dffabe6da9b4c3145a4f68d1b866563", size = 47155, upload-time = "2025-08-06T23:50:59.604Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/a7/d1658347bee47742e9157d8f27c64fb30f562c75c84311a85aa12a867579/lazynwb-0.2.70.tar.gz", hash = "sha256:522911ee4add81090ded74b3aa14efff7346d0a9b34f2940b239c90ddc1f4e2a", size = 47530, upload-time = "2025-08-07T02:39:29.4Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/d0/7b664129e474904c18b8463448c347ac36406a0895bfb032106302c8d474/lazynwb-0.2.67-py3-none-any.whl", hash = "sha256:ae37bcfce6dfed8dba2e8173666368aa8aae5288d706720cc6f6a33ca9726b5f", size = 39346, upload-time = "2025-08-06T23:50:58.326Z" },
+    { url = "https://files.pythonhosted.org/packages/77/26/e06e6f3ecd3af20b88a70207e50c12a7a209a83a8f31963aacfc95d387be/lazynwb-0.2.70-py3-none-any.whl", hash = "sha256:d1e63eef31555d392913108101bc302e4012fb51b5687b7edfa5394c114c1a4b", size = 39653, upload-time = "2025-08-07T02:39:28.255Z" },
 ]
 
 [[package]]
