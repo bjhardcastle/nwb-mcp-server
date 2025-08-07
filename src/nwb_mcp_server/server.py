@@ -138,22 +138,57 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     root_dir: str
     glob_pattern: str
 
+def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
+    """Create a SQLContext for non-NWB sources."""
+    sources = tuple(sources)
+    if not sources:
+        raise ValueError("Must provide at least one source path")
+    table_name_to_path = {p.stem: p for p in sources}
+    if len(table_name_to_path) != len(sources):
+        raise ValueError("Duplicate source names found, please ensure unique names for each source")
+    
+    suffix_to_read_function = {
+        ".csv": "scan_csv",
+        "": "scan_delta",  # Delta uses directory structure
+        ".feather": "scan_ipc",
+        ".json": "scan_ndjson",
+        ".ndjson": "scan_ndjson",
+        ".parquet": "scan_parquet",
+        ".arrow": "scan_pyarrow_dataset",
+    }
+    frames = {}
+    for table_name, path in table_name_to_path.items():
+        ext = path.suffix.lower()
+        if ext not in suffix_to_read_function:
+            raise ValueError(f"Unsupported file extension: {ext}")
+        if ext == "" and not path.is_dir():
+            raise ValueError(f"Received a data source with no extension but is not a directory: {path}. Unsure how to continue.")
+        read_func = getattr(pl, suffix_to_read_function[ext])
+        frames[table_name] = read_func(path.as_posix())
+    return pl.SQLContext(frames=frames, eager=False)
+
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     """Manage server startup and shutdown lifecycle."""
     # Initialize the SQL connection to the NWB files
     logger.info("Initializing SQL connection to NWB files (may take a while)")
-    sql_context = await asyncio.to_thread(
-        lazynwb.get_sql_context, 
-        nwb_sources=get_nwb_sources(), 
-        infer_schema_length=config.infer_schema_length, 
-        table_names=config.tables or None,
-        exclude_timeseries=False,
-        full_path=True,  # if False, NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
-        disable_progress=True,
-        eager=False,  # if False, a LazyFrame is returned from `execute`
-        rename_general_metadata=True,  # renames the metadata in 'general' as 'session'
-    )
+    sources = get_nwb_sources()
+    if not any('.nwb' in str(s) for s in sources):
+        # If no NWB files found, create a non-NWB SQLContext
+        logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
+        sql_context = create_sql_context_non_nwb(sources)
+    else:
+        sql_context = await asyncio.to_thread(
+            lazynwb.get_sql_context, 
+            nwb_sources=sources, 
+            infer_schema_length=config.infer_schema_length, 
+            table_names=config.tables or None,
+            exclude_timeseries=False,
+            full_path=True,  # if False, NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
+            disable_progress=True,
+            eager=False,  # if False, a LazyFrame is returned from `execute`
+            rename_general_metadata=True,  # renames the metadata in 'general' as 'session'
+        )
     logger.info("SQL connection initialized successfully")
     try:
         yield AppContext(db=sql_context)
