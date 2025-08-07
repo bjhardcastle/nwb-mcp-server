@@ -120,9 +120,9 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
         infer_schema_length=config.infer_schema_length, 
         table_names=config.tables or None,
         exclude_timeseries=config.no_code,
-        full_path=False,  # NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
+        full_path=True,  # if False, NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
         disable_progress=True,
-        eager=False,  # a LazyFrame is returned from `execute`
+        eager=False,  # if False, a LazyFrame is returned from `execute`
         rename_general_metadata=True,  # renames the metadata in 'general' as 'session'
     )
     logger.info("SQL connection initialized successfully")
@@ -150,7 +150,7 @@ async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, p
     if not table_name:
         raise ValueError("Table name cannot be empty")
     logger.info(f"Fetching schema for table: {table_name}")
-    query = f"SELECT * FROM {table_name} LIMIT 0"
+    query = f"SELECT * FROM {table_name!r} LIMIT 0"
     lf: pl.LazyFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query)
     return lf.schema
 
@@ -180,7 +180,7 @@ async def preview_table_values(table: str, ctx: fastmcp.Context, columns: Iterab
             columns = [columns]
         column_query = ', '.join(repr(c) for c in columns)
     assert column_query, "column query cannot be empty"
-    query = f"SELECT {column_query} FROM {table} LIMIT 1;"
+    query = f"SELECT {column_query} FROM {table!r} LIMIT 1;"
     logger.info(f"Previewing table values with: {column_query}")
     return await _execute_query(query, ctx)
 
