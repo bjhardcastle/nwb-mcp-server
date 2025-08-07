@@ -54,6 +54,10 @@ class ServerConfig(pydantic_settings.BaseSettings):
         default=False,
         description="Run the server in unattended mode, where it does not prompt the user for input. Useful for automated tasks.",
     )
+    table_element_limit: int = pydantic.Field(
+        default=500,
+        description="Maximum number of elements (columns x rows) allowed in a table returned by a SQL query without raising an error. This is to avoid overwhelming the context window.",
+    )
     ignored_args: pydantic_settings.CliUnknownArgs
 
 config = ServerConfig() # type: ignore[call-arg]
@@ -190,7 +194,11 @@ async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParam
 @server.tool(enabled=True)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
-    returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
+    returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
+    
+    Queries should be designed to return a manageable amount of data for interpretation by an LLM,
+    ideally less than 20 rows. If too much data is returned an error will be raised.
+    """
     return await _execute_query(query, ctx)
 
 @server.tool(enabled=True)
@@ -220,6 +228,8 @@ async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
     if df.is_empty():
         logger.warning("SQL query returned no results")
         return "[]"
+    if (elements := df.shape[0] * df.shape[1]) > config.table_element_limit:
+        raise ValueError(f"SQL query returned too many elements ({elements}): please refine the query by aggregating or filtering to avoid filling the context window with data.")
     logger.info(f"Query executed successfully, serializing {len(df)} rows as JSON")
     # return _to_markdown(df)
     if 'obs_intervals' in df.columns:
