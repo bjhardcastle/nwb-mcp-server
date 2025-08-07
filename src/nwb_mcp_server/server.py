@@ -180,7 +180,7 @@ async def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, p
     if not table_name:
         raise ValueError("Table name cannot be empty")
     logger.info(f"Fetching schema for table: {table_name}")
-    query = f"SELECT * FROM {table_name!r} LIMIT 0"
+    query = f"SELECT * FROM {format_table_name(table_name)} LIMIT 0"
     lf: pl.LazyFrame = await asyncio.to_thread(ctx.request_context.lifespan_context.db.execute, query)
     return lf.schema
 
@@ -201,20 +201,26 @@ async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     """
     return await _execute_query(query, ctx)
 
+def format_table_name(table: str) -> str:
+    """Ensures the table name is properly formatted for pl.SQLContext queries."""
+    if not table:
+        raise ValueError("Table name cannot be empty")
+    return f'"{table}"'
+
+def format_column_names(columns: Iterable[str] | None) -> str:
+    """Formats column names for SQL queries, ensuring they are properly quoted."""
+    if not columns:
+        return "*"
+    if isinstance(columns, str):
+        columns = [columns]
+    return ', '.join(repr(c) for c in columns).replace("'", '"')
+
 @server.tool(enabled=True)
 async def preview_table_values(table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None) -> str:
     """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
     table schema. Only use this if absolutely necessary."""
-    if not table:
-        raise ValueError("Table name cannot be empty")
-    if not columns:
-        column_query = "*"
-    else:
-        if isinstance(columns, str):
-            columns = [columns]
-        column_query = ', '.join(repr(c) for c in columns)
-    assert column_query, "column query cannot be empty"
-    query = f"SELECT {column_query} FROM {table!r} LIMIT 1;"
+    column_query = format_column_names(columns)
+    query = f"SELECT {column_query} FROM {format_table_name(table)} LIMIT 1;"
     logger.info(f"Previewing table values with: {column_query}")
     return await _execute_query(query, ctx)
 
