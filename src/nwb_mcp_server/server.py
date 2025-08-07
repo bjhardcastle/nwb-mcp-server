@@ -4,6 +4,10 @@
 #   "fastmcp",
 # ]
 # ///
+
+import os
+os.environ["RUST_BACKTRACE"] = "1"  # enable Rust backtraces for lazynwb
+
 import asyncio
 import contextlib
 import dataclasses
@@ -122,11 +126,12 @@ c. Be extremely cautious when loading data from TimeSeries tables (tables with `
 @functools.cache
 def get_nwb_sources() -> list[upath.UPath]:
     """Get the list of NWB files based on the provided root directory and glob pattern."""
+    # TODO make async
     logger.info(f"Searching for NWB files in {config.root_dir} with pattern {config.glob_pattern}")
     nwb_paths = list(upath.UPath(config.root_dir).glob(config.glob_pattern))
     if not nwb_paths:
         raise ValueError(f"No NWB files found in {config.root_dir!r} matching pattern {config.glob_pattern!r}")
-    logger.info(f"Found {len(nwb_paths)} NWB files")
+    logger.info(f"Found {len(nwb_paths)} data sources")
     return nwb_paths
 
 @dataclasses.dataclass
@@ -138,7 +143,7 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     root_dir: str
     glob_pattern: str
 
-def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
+async def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
     """Create a SQLContext for non-NWB sources."""
     sources = tuple(sources)
     if not sources:
@@ -165,7 +170,7 @@ def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
             raise ValueError(f"Received a data source with no extension but is not a directory: {path}. Unsure how to continue.")
         read_func = getattr(pl, suffix_to_read_function[ext])
         frames[table_name] = read_func(path.as_posix())
-    return pl.SQLContext(frames=frames, eager=False)
+    return await asyncio.to_thread(pl.SQLContext, frames=frames, eager=False)
 
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
@@ -176,7 +181,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     if not any('.nwb' in str(s) for s in sources):
         # If no NWB files found, create a non-NWB SQLContext
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
-        sql_context = create_sql_context_non_nwb(sources)
+        sql_context = await create_sql_context_non_nwb(sources)
     else:
         sql_context = await asyncio.to_thread(
             lazynwb.get_sql_context, 
