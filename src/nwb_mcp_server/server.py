@@ -50,10 +50,6 @@ class ServerConfig(pydantic_settings.BaseSettings):
         default=1,
         description="Number of NWB files to scan to infer schema for all files",
     )
-    no_code: bool = pydantic.Field(
-        default=False,
-        description="The agent itself performs analysis rather than generating code for the user to run. Works best for simple analyses on smaller datasets.",
-    )
     unattended: bool = pydantic.Field(
         default=False,
         description="Run the server in unattended mode, where it does not prompt the user for input. Useful for automated tasks.",
@@ -62,6 +58,62 @@ class ServerConfig(pydantic_settings.BaseSettings):
 
 config = ServerConfig() # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
+
+UNATTENDED_RULE = (
+    "Never prompt the user for input or clarification. Work entirely autonomously and make principled"
+    "decisions based on the available data to achieve the most accurate and useful outcome."
+) if config.unattended else ""
+
+RULES = f"""
+<rules>
+1. Always start in No Code Mode.
+2. Highlight any assumptions you make.
+3. Explain how you averaged or aggregated data, if applicable.
+4. Do not make things up.
+5. Do not provide an excessively positive picture. Be objective. Be critical where appropriate. 
+6. {UNATTENDED_RULE}
+</rules>
+"""
+
+ABOUT = f"""
+<mcp>
+The NWB MCP server provides tools for querying a read-only virtual database of NWB data, with two modes of
+operation:
+1. **No Code Mode**: The agent itself performs queries. This can be used for simple analyses on smaller datasets and for
+gaining an initial understanding of the structure of the data. 
+2. **Code Mode**: The agent writes files in the workspace containing Python code. No Code Mode
+should be used first to help plan the files that should be written.
+
+<no_code_mode>
+The agent can execute PostgreSQL queries against the NWB data using the `execute_query` tool.
+a. Use standard SQL syntax, including `SELECT`, `FROM`, `WHERE`, `JOIN`, etc. and functions like `COUNT`, `AVG`, `SUM`, etc.
+b. Do as much filtering as possible in the query to avoid loading all rows/columns into memory.
+c. Avoid loading TimeSeries tables.
+</no_code_mode>
+
+<code_mode>
+The agent can write files containing Python code to interact with the NWB files using the `lazynwb` package.
+a. Use `upath` to search for NWB files: `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`
+b. Use `lazynwb` to interact with tables in the NWB files:
+   i. Get a polars `LazyFrame` for a table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
+   ii. Write queries against the `LazyFrame` using standard polars methods.
+   iii. Use `.filter()` as appropriate to avoid loading all rows into memory.
+   iv. Use `.select()` to choose specific columns to include in the final result and avoid loading
+   unnecessary columns, particularly array- or list-like columns.
+   v. Then use `.collect()` to execute the query and get a polars `DataFrame`.
+</code_mode>
+
+<nwb>
+1. The `session` or `general` tables may contain useful metadata about the session, such as
+   `experiment_description`.
+2. Use the `default_qc` Boolean column in the `units` table, which indicates whether the unit
+   passed quality control checks.
+c. Be extremely cautious when loading data from TimeSeries tables (tables with `timestamps` and
+   `data` columns) as they can be large.
+</nwb>
+
+</mcp>
+"""
 
 @functools.cache
 def get_nwb_sources() -> list[upath.UPath]:
@@ -82,33 +134,6 @@ class NWBFileSearchParameters(pydantic.BaseModel):
     root_dir: str
     glob_pattern: str
 
-if config.no_code:
-    instructions = f"""
-    This NWB MCP server provides tools for querying a read-only virtual database of NWB data.
-    1. execute PostgreSQL queries against the NWB data using the `execute_query` tool.
-    a. Use standard SQL syntax, including `SELECT`, `FROM`, `WHERE`, `JOIN`, etc. and functions like `COUNT`, `AVG`, `SUM`, etc.
-    b. Do as much filtering as possible in the query to avoid loading all rows/columns into memory.
-    """
-else:
-    instructions = f"""
-    This NWB MCP server provides a tools for previewing and working with NWB files.
-    
-    When writing Python code to interact with the NWB files, please follow these steps:
-    1. use upath (`universal-pathlib` Python package) to search for NWB files:
-    `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`
-    If the path points to S3, the user may need to supply credentials to access it.
-    2. Once you have found the NWB files, use `polars` to interact with tables in them:
-    a. Get a polars LazyFrame for table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
-    b. Write queries against the LazyFrame using standard `pl.LazyFrame` methods.
-    c. Use `.filter()` as appropriate to avoid loading all rows into memory.
-    d. Use `.select()` to choose specific columns to include in the final result and avoid loading
-    unnecessary columns, particularly array- or list-like columns.
-    e. Use `lf.collect()` to execute the query and get a polars DataFrame.
-    3. Use the `default_qc` Boolean column in the `units` table, which indicates whether the unit
-    passed quality control checks.
-    4. The `session` or `general` tables may contain useful metadata about the session, such as `experiment_description`
-    """
-
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     """Manage server startup and shutdown lifecycle."""
@@ -119,7 +144,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
         nwb_sources=get_nwb_sources(), 
         infer_schema_length=config.infer_schema_length, 
         table_names=config.tables or None,
-        exclude_timeseries=config.no_code,
+        exclude_timeseries=False,
         full_path=True,  # if False, NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
         disable_progress=True,
         eager=False,  # if False, a LazyFrame is returned from `execute`
@@ -134,6 +159,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
 server = fastmcp.FastMCP(
     name="nwb-mcp-server",
     lifespan=server_lifespan,
+    # instructions=ABOUT + RULES,
     # instructions can be passed as a string, but does not appear to influence the agent (VScode) 
 )
 
@@ -161,7 +187,7 @@ async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParam
         glob_pattern=config.glob_pattern,
     )
 
-@server.tool(enabled=config.no_code)
+@server.tool(enabled=True)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
@@ -221,77 +247,66 @@ def nwb_paths() -> list[str]:
     """List the available NWB files."""
     return [p.as_posix() for p in get_nwb_sources()]
 
+
 @server.prompt
 def analysis_report_prompt(query: str) -> str:
     """User prompt for creating an analysis report."""
-    rules = """
-        <rules>
-            1. Highlight any assumptions you make.
-            2. Explain how you averaged or aggregated data, if applicable.
-            3. Do not make things up.
-            4. Do not provide an excessively positive picture. Be objective. Be critical where
-               appropriate.
-        </rules>
-    """
-    if config.unattended:
-        user_input_prompt = """
-        Never prompt the user for clarifying questions or input. Make principled decisions to
-        achieve the most accurate and useful analysis.
-        """
-    else:
-        user_input_prompt = """
-        Ask the user clarifying questions to understand the query and plan the analysis.
-        Questions should be enumerated so that the user can answer them one by one.
-        """
-    if config.no_code:
-        
-        return f"""
-        Please provide an analysis report for a scientist posing the following query:
-        <query>
-        {query!r}
-        </query>
+    if not query:
+        raise ValueError("Query cannot be empty")
 
-        {rules}
-        
-        <instructions>
-        1. {user_input_prompt}
-        2. Explore the available tables to understand their schemas and relationships.
-        3. Develop a step-by-step plan for the analysis.
-        4. Do not create files with code to run. 
-        5. Execute the analysis and provide a detailed report of the findings.
-        </instructions>
-        
-        <mcp>
-        {instructions}
-        </mcp>
-        """
-    else:
-        return f"""
-        Please write analysis code in Python for a scientist posing the following query:
-        <query>
-        {query!r}
-        </query>
+    return f"""
+Please provide an analysis report for a scientist posing the following query:
+{query!r}
 
-        {rules}
+{RULES}
 
-        <instructions>
-        1. {user_input_prompt}
-        2. Explore the available tables to understand their schemas and relationships.
-        3. Develop a step-by-step plan for the Python code that will be written.
-        4. Write Python code that:
+<instructions>
+1. Explore the available tables in No Code Mode to understand their schemas and relationships.
+2. Develop a step-by-step plan for the analysis, prompting the user for any necessary clarifications.
+    i. if the analysis is simple, you can run it in No Code Mode. 
+    ii. if the analysis is complex (ie. requires custom functions, data processing, or may take a long
+        time to run), switch to Code Mode and create Python code that:
         a. fetches data
         b. runs any required pre-processing
         c. generates relevant visualizations
         d. performs any statistical analyses
         e. summarizes the results
-        5. If the analysis is expected to take a long time, incorporate a test mode that runs the
-        analysis on a small subset of the data first. The user can then run the full analysis offline.
-        </instructions>
+    If the analysis is expected to take a long time, incorporate a test mode that runs the
+    analysis on a small subset of the data first. The user can then run the full analysis offline.
+3. Execute the analysis and provide a detailed report of the findings.
+</instructions>
 
-        <mcp>
-        {instructions}
-        </mcp>
-        """
+{ABOUT}
+"""
+
+@server.prompt
+def general_prompt(query: str) -> str:
+    """User prompt for general queries."""
+    if not query:
+        raise ValueError("Query cannot be empty")
+
+    return f"""
+Please provide a detailed response to a scientist posing the following query:
+{query!r}
+
+{RULES}
+
+<instructions>
+1. Explore the available tables in No Code Mode to understand their schemas and relationships.
+2. Provide a comprehensive answer to the query, including relevant data and insights.
+3. If the query requires complex analysis, switch to Code Mode and create Python code that:
+    i. fetches data
+    ii. runs any required pre-processing
+    iii. generates relevant visualizations
+    iv. performs any statistical analyses
+    v. summarizes the results
+    If the analysis is expected to take a long time, incorporate a test mode that runs the
+    analysis on a small subset of the data first. The user can then run the full analysis offline.
+</instructions>
+
+{ABOUT}
+"""
+
 def main() -> None:
     server.run()
     
