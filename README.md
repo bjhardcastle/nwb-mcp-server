@@ -51,8 +51,8 @@ should be used).
 
 > **🛈 Note**
 >
-> You may be prompted to choose between creating the server "global" or "workspace". If you intend
-> to switch between datasets it may be preferable to have the `mcp.json` file in your workspace, to
+> You may be prompted to choose between adding the server to a "global" or "workspace" config. If you intend
+> to switch between datasets it may be preferable to have the `mcp.json` config in your workspace, to
 > be able to easily modify the path to your data. The global setting is convenient in that the
 > server will be available in all VS Code instances.
 
