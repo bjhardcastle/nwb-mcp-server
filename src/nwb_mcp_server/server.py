@@ -6,32 +6,36 @@
 # ///
 
 import os
+
 os.environ["RUST_BACKTRACE"] = "1"  # enable Rust backtraces for lazynwb
 
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import importlib.metadata
 import io
-import functools
 import logging
-from typing import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable
 
+import fastmcp
 import lazynwb
 import polars as pl
 import pydantic
 import pydantic_settings
-import fastmcp
 import upath
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
-logger.info(f"Starting MCP NWB Server with lazynwb v{importlib.metadata.version('lazynwb')}")
+logger.info(
+    f"Starting MCP NWB Server with lazynwb v{importlib.metadata.version('lazynwb')}"
+)
+
 
 class ServerConfig(pydantic_settings.BaseSettings):
     """Configuration for the NWB MCP Server."""
-    
+
     model_config = pydantic_settings.SettingsConfigDict(
         cli_parse_args=True,
         cli_implicit_flags=True,
@@ -64,13 +68,18 @@ class ServerConfig(pydantic_settings.BaseSettings):
     )
     ignored_args: pydantic_settings.CliUnknownArgs
 
-config = ServerConfig() # type: ignore[call-arg]
+
+config = ServerConfig()  # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
 
 UNATTENDED_RULE = (
-    "Never prompt the user for input or clarification. Work entirely autonomously and make principled"
-    "decisions based on the available data to achieve the most accurate and useful outcome."
-) if config.unattended else ""
+    (
+        "Never prompt the user for input or clarification. Work entirely autonomously and make principled"
+        "decisions based on the available data to achieve the most accurate and useful outcome."
+    )
+    if config.unattended
+    else ""
+)
 
 RULES = f"""
 <rules>
@@ -123,25 +132,34 @@ c. Be extremely cautious when loading data from TimeSeries tables (tables with `
 </mcp>
 """
 
+
 @functools.cache
 def get_nwb_sources() -> list[upath.UPath]:
     """Get the list of NWB files based on the provided root directory and glob pattern."""
     # TODO make async
-    logger.info(f"Searching for NWB files in {config.root_dir} with pattern {config.glob_pattern}")
+    logger.info(
+        f"Searching for NWB files in {config.root_dir} with pattern {config.glob_pattern}"
+    )
     nwb_paths = list(upath.UPath(config.root_dir).glob(config.glob_pattern))
     if not nwb_paths:
-        raise ValueError(f"No NWB files found in {config.root_dir!r} matching pattern {config.glob_pattern!r}")
+        raise ValueError(
+            f"No NWB files found in {config.root_dir!r} matching pattern {config.glob_pattern!r}"
+        )
     logger.info(f"Found {len(nwb_paths)} data sources")
     return nwb_paths
+
 
 @dataclasses.dataclass
 class AppContext:
     db: pl.SQLContext
 
+
 class NWBFileSearchParameters(pydantic.BaseModel):
     """Used to find NWB files in the filesystem."""
+
     root_dir: str
     glob_pattern: str
+
 
 def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
     """Create a SQLContext for non-NWB sources."""
@@ -150,8 +168,10 @@ def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
         raise ValueError("Must provide at least one source path")
     table_name_to_path = {p.stem: p for p in sources}
     if len(table_name_to_path) != len(sources):
-        raise ValueError("Duplicate source names found, please ensure unique names for each source")
-    
+        raise ValueError(
+            "Duplicate source names found, please ensure unique names for each source"
+        )
+
     suffix_to_read_function = {
         ".csv": "scan_csv",
         "": "scan_delta",  # Delta uses directory structure
@@ -167,10 +187,13 @@ def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
         if ext not in suffix_to_read_function:
             raise ValueError(f"Unsupported file extension: {ext}")
         if ext == "" and not path.is_dir():
-            raise ValueError(f"Received a data source with no extension but is not a directory: {path}. Unsure how to continue.")
+            raise ValueError(
+                f"Received a data source with no extension but is not a directory: {path}. Unsure how to continue."
+            )
         read_func = getattr(pl, suffix_to_read_function[ext])
         frames[table_name] = read_func(path.as_posix())
     return pl.SQLContext(frames=frames, eager=False)
+
 
 @contextlib.asynccontextmanager
 async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
@@ -178,7 +201,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     # Initialize the SQL connection to the NWB files
     logger.info("Initializing SQL connection to NWB files (may take a while)")
     sources = get_nwb_sources()
-    if not any('.nwb' in str(s) for s in sources):
+    if not any(".nwb" in str(s) for s in sources):
         # If no NWB files found, create a non-NWB SQLContext
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
         sql_context = create_sql_context_non_nwb(sources)
@@ -199,19 +222,23 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     finally:
         await asyncio.to_thread(lazynwb.clear_cache)
 
+
 server = fastmcp.FastMCP(
     name="nwb-mcp-server",
     lifespan=server_lifespan,
     # instructions=ABOUT + RULES,
-    # instructions can be passed as a string, but does not appear to influence the agent (VScode) 
+    # instructions can be passed as a string, but does not appear to influence the agent (VScode)
 )
+
 
 @server.tool()
 def get_tables(ctx: fastmcp.Context) -> list[str]:
     """Returns a list of available tables in the NWB files. Each table includes data from multiple
-    NWB files, where one file includes data from a single session for a single subject."""
+    NWB files, where one file includes data from a single session for a single subject.
+    """
     logger.info("Fetching available tables from NWB files")
     return ctx.request_context.lifespan_context.db.tables()
+
 
 @server.tool()
 def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.DataType]:
@@ -223,6 +250,7 @@ def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.Data
     lf: pl.LazyFrame = ctx.request_context.lifespan_context.db.execute(query)
     return lf.schema
 
+
 @server.resource("config://nwb_file_search_parameters")
 async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
     return NWBFileSearchParameters(
@@ -230,15 +258,17 @@ async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParam
         glob_pattern=config.glob_pattern,
     )
 
+
 @server.tool(enabled=True)
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
-    
+
     Queries should be designed to return a manageable amount of data for interpretation by an LLM,
     ideally less than 20 rows. If too much data is returned an error will be raised.
     """
     return await _execute_query(query, ctx)
+
 
 def format_table_name(table: str) -> str:
     """Ensures the table name is properly formatted for pl.SQLContext queries."""
@@ -246,16 +276,20 @@ def format_table_name(table: str) -> str:
         raise ValueError("Table name cannot be empty")
     return f'"{table}"'
 
+
 def format_column_names(columns: Iterable[str] | None) -> str:
     """Formats column names for SQL queries, ensuring they are properly quoted."""
     if not columns:
         return "*"
     if isinstance(columns, str):
         columns = [columns]
-    return ', '.join(repr(c) for c in columns).replace("'", '"')
+    return ", ".join(repr(c) for c in columns).replace("'", '"')
+
 
 @server.tool(enabled=True)
-async def preview_table_values(table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None) -> str:
+async def preview_table_values(
+    table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None
+) -> str:
     """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
     table schema. Only use this if absolutely necessary."""
     column_query = format_column_names(columns)
@@ -263,27 +297,34 @@ async def preview_table_values(table: str, ctx: fastmcp.Context, columns: Iterab
     logger.info(f"Previewing table values with: {column_query}")
     return await _execute_query(query, ctx)
 
+
 async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
-    returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis."""
+    returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
+    """
     if not query:
         raise ValueError("SQL query cannot be empty")
     logger.info(f"Executing query: {query}")
-    df: pl.DataFrame = ctx.request_context.lifespan_context.db.execute(query, eager=True)
+    df: pl.DataFrame = ctx.request_context.lifespan_context.db.execute(
+        query, eager=True
+    )
     if df.is_empty():
         logger.warning("SQL query returned no results")
         return "[]"
     if (elements := df.shape[0] * df.shape[1]) > config.table_element_limit:
-        raise ValueError(f"SQL query returned too many elements ({elements}): please refine the query by aggregating or filtering to avoid filling the context window with data.")
+        raise ValueError(
+            f"SQL query returned too many elements ({elements}): please refine the query by aggregating or filtering to avoid filling the context window with data."
+        )
     logger.info(f"Query executed successfully, serializing {len(df)} rows as JSON")
     # return _to_markdown(df)
-    if 'obs_intervals' in df.columns:
+    if "obs_intervals" in df.columns:
         # lists of arrays cause JSON conversion to crash
         # arrays are ok
         # TODO report issue to polars
         # TODO generalize to cast all list[array] columns
-        df = df.cast({'obs_intervals': pl.List(pl.List(pl.Float64))})
+        df = df.cast({"obs_intervals": pl.List(pl.List(pl.Float64))})
     return df.write_json()
+
 
 def _to_markdown(df: pl.DataFrame) -> str:
     # https://github.com/pola-rs/polars/issues/13907#issuecomment-1904137685
@@ -296,6 +337,7 @@ def _to_markdown(df: pl.DataFrame) -> str:
         print(df, file=buf)
     buf.seek(0)
     return buf.read()
+
 
 @server.resource("dir://nwb_paths")
 def nwb_paths() -> list[str]:
@@ -334,6 +376,7 @@ Please provide an analysis report for a scientist posing the following query:
 {ABOUT}
 """
 
+
 @server.prompt
 def general_prompt(query: str) -> str:
     """User prompt for general queries."""
@@ -362,8 +405,10 @@ Please provide a detailed response to a scientist posing the following query:
 {ABOUT}
 """
 
+
 def main() -> None:
     server.run()
-    
+
+
 if __name__ == "__main__":
     main()

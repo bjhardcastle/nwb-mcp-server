@@ -1,6 +1,6 @@
 [project]
 name = "nwb-mcp-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "An MCP server for accessing NWB (Neurodata Without Borders) files, providing AI agents with easy access to neuroscience data."
 readme = "README.md"
 authors = [
