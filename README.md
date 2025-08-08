@@ -2,7 +2,7 @@
 
 An MCP server for accessing NWB (Neurodata Without Borders) files, providing AI agents easy access to neuroscience data.
 
-# Features
+## Features
 - 🚀 Rapid exploration of new datasets
 - 🗂️ Automatically-generated analysis reports
 - 🧠 Prompt templates instruct agents to get the most from the tools
@@ -46,3 +46,11 @@ Similar extensions, such as Cline, may also work.
 | infer_schema_length  | Number of NWB files to scan to infer schema for all files                                        | `1`             |
 | unattended           | Run the server in unattended mode (no user prompts, for automation)                              | `false`          |
 | table_element_limit  | Max elements (columns x rows) allowed in a table returned by a SQL query                         | `500`            |
+
+## Usage examples
+
+Use the provided prompt templates (start typing `/`) to perform data exploration and analysis:
+
+![Exploring data 0](docs/resources/data_exploration_0.gif)
+
+![Exploring data 1](docs/resources/data_exploration_1.gif)
