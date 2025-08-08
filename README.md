@@ -25,8 +25,7 @@ Alternatively, install with pip in your system Python environment:
 pip install uv
 ```
 ### 2. Copilot Chat extension 
-Available on the [VS Code extensions marketplace]
-(https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat)
+Available on the [VS Code extensions marketplace](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat)
 
 Similar extensions, such as Cline, may also work.
 
