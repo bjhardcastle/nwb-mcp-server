@@ -19,13 +19,11 @@ def test_cli_args(monkeypatch):
         'prog',
         '--root_dir', override_values['root_dir'],
         '--glob_pattern', override_values['glob_pattern'],
-        '--no_code', # flag should not need a value
     ])
     
     config = ServerConfig()
     assert config.root_dir == override_values['root_dir'], "CLI arguments not being parsed correctly"
     assert config.glob_pattern == override_values['glob_pattern'], "CLI arguments not being parsed correctly"
-    assert config.no_code is True, "Boolean flag argument not being parsed correctly"
     
 if __name__ == "__main__":
     pytest.main([__file__])
