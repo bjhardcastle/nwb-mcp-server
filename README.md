@@ -14,10 +14,10 @@ An MCP server for accessing NWB (Neurodata Without Borders) files, providing AI 
 
 ## Requirements
 
-### 1. `uv`
-`uv` is used to run the server with the required dependencies, in an isolated virtual environment.
+### 1. uv
+[`uv`](https://github.com/astral-sh/uv#readme) is used to run the server with the required dependencies, in an isolated virtual environment.
 
-See the [uv installation guide](https://github.com/astral-sh/uv#installation) for platform-specific instructions for a system-wide installation.
+See the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) for platform-specific instructions for a system-wide installation.
 
 Alternatively, install with pip in your system Python environment:
 
