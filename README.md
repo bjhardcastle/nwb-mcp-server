@@ -41,7 +41,7 @@ Similar extensions, such as Cline, may also work.
 | Parameter            | Description                                                                                      | Default        |
 |----------------------|--------------------------------------------------------------------------------------------------|----------------|
 | root_dir             | Root directory to search for NWB files (forward slash ok on Windows)                             | `"data"`        |
-| glob_pattern         | A glob pattern to apply to `root_dir` to locate NWB files. Use `"**/*.nwb"` for sub-directories. | `"**/*.nwb"`    |
+| glob_pattern         | A glob pattern to apply to `root_dir` to locate NWB files. Use `"**/*.nwb"` for sub-directories. | `"*.nwb"`    |
 | tables               | Restrict the list of NWB tables to use, e.g. `["trials", "units"]`                            | `null`     |
 | infer_schema_length  | Number of NWB files to scan to infer schema for all files                                        | `1`             |
 | unattended           | Run the server in unattended mode (no user prompts, for automation)                              | `false`          |
