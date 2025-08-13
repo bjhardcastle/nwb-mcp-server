@@ -134,7 +134,7 @@ c. Be extremely cautious when loading data from TimeSeries tables (tables with `
 
 
 @functools.cache
-def get_nwb_sources() -> list[upath.UPath]:
+def _get_nwb_sources() -> list[upath.UPath]:
     """Get the list of NWB files based on the provided root directory and glob pattern."""
     # TODO make async
     logger.info(
@@ -200,7 +200,7 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
     """Manage server startup and shutdown lifecycle."""
     # Initialize the SQL connection to the NWB files
     logger.info("Initializing SQL connection to NWB files (may take a while)")
-    sources = get_nwb_sources()
+    sources = _get_nwb_sources()
     if not any(".nwb" in str(s) for s in sources):
         # If no NWB files found, create a non-NWB SQLContext
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
@@ -251,12 +251,11 @@ def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.Data
     return lf.schema
 
 
-@server.resource("config://nwb_file_search_parameters")
-async def nwb_file_search_parameters(ctx: fastmcp.Context) -> NWBFileSearchParameters:
-    return NWBFileSearchParameters(
-        root_dir=config.root_dir,
-        glob_pattern=config.glob_pattern,
-    )
+@server.tool()
+def nwb_file_search_code_snippet() -> str:
+    """Returns a code snippet for finding the user's NWB files. `upath` is a 3rd-party package that implements the pathlib
+    interface for local and cloud storage: when installing, its name on PyPI is `universal-pathlib`"""
+    return f"nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))"
 
 
 @server.tool(enabled=True)
@@ -288,12 +287,12 @@ def format_column_names(columns: Iterable[str] | None) -> str:
 
 @server.tool(enabled=True)
 async def preview_table_values(
-    table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None
+    table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None, n_rows: int = 1
 ) -> str:
     """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
     table schema. Only use this if absolutely necessary."""
     column_query = format_column_names(columns)
-    query = f"SELECT {column_query} FROM {format_table_name(table)} LIMIT 1;"
+    query = f"SELECT {column_query} FROM {format_table_name(table)} LIMIT {n_rows};"
     logger.info(f"Previewing table values with: {column_query}")
     return await _execute_query(query, ctx)
 
@@ -342,8 +341,12 @@ def _to_markdown(df: pl.DataFrame) -> str:
 @server.resource("dir://nwb_paths")
 def nwb_paths() -> list[str]:
     """List the available NWB files."""
-    return [p.as_posix() for p in get_nwb_sources()]
+    return [p.as_posix() for p in _get_nwb_sources()]
 
+@server.tool()
+def get_nwb_paths() -> list[str]:
+    """Get the NWB paths."""
+    return _get_nwb_sources()
 
 @server.prompt
 def analysis_report_prompt(query: str) -> str:
