@@ -254,7 +254,8 @@ def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.Data
 @server.tool()
 def nwb_file_search_code_snippet() -> str:
     """Returns a code snippet for finding the user's NWB files. `upath` is a 3rd-party package that implements the pathlib
-    interface for local and cloud storage: when installing, its name on PyPI is `universal-pathlib`"""
+    interface for local and cloud storage: when installing, its name on PyPI is `universal-pathlib`
+    """
     return f"nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))"
 
 
@@ -287,7 +288,10 @@ def format_column_names(columns: Iterable[str] | None) -> str:
 
 @server.tool(enabled=True)
 async def preview_table_values(
-    table: str, ctx: fastmcp.Context, columns: Iterable[str] | None = None, n_rows: int = 1
+    table: str,
+    ctx: fastmcp.Context,
+    columns: Iterable[str] | None = None,
+    n_rows: int = 1,
 ) -> str:
     """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
     table schema. Only use this if absolutely necessary."""
@@ -343,10 +347,12 @@ def nwb_paths() -> list[str]:
     """List the available NWB files."""
     return [p.as_posix() for p in _get_nwb_sources()]
 
+
 @server.tool()
 def get_nwb_paths() -> list[str]:
     """Get the NWB paths."""
     return [p.as_posix() for p in _get_nwb_sources()]
+
 
 @server.prompt
 def analysis_report_prompt(query: str) -> str:
