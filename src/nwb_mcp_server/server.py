@@ -346,7 +346,7 @@ def nwb_paths() -> list[str]:
 @server.tool()
 def get_nwb_paths() -> list[str]:
     """Get the NWB paths."""
-    return _get_nwb_sources()
+    return [p.as_posix() for p in _get_nwb_sources()]
 
 @server.prompt
 def analysis_report_prompt(query: str) -> str:
