@@ -107,24 +107,17 @@ tools. This is a work in progress.
 > is possible entirely within the chat dialog, without the need for the agent to create and run
 > Python scripts in the workspace.
 
-### Prompt templates
-Use the provided prompt templates to add preset instructions that specify how the server should be
-used (just start typing `/` followed by the name you gave the server):
-![Accessing prompt templates](docs/resources/prompt_templates.png)
-
-Feel free to customize the instructions before submitting the prompt.
-
-![Exploring data 0](docs/resources/data_exploration_0.gif)
-
-![Exploring data 1](docs/resources/data_exploration_1.gif)
-
 ### Custom chat modes
-✨ **Coming soon!** ✨
 
-As an alternative to prompt templates, use custom chat modes provided for data exploration and
-analysis:
-![VS Code custom chat
-modes](https://code.visualstudio.com/assets/docs/copilot/chat/chat-modes/chat-mode-dropdown.png)
+Copy the [`.github`](https://github.com/bjhardcastle/nwb-mcp-server/tree/main/agents/.github)
+folder into your project to make two chat modes available in Copilot:
+![custom chat modes for Copilot](docs/resources/chatmodes.png)
+These modes program Copilot's behavior and constrain the tools available, and are tailored for
+- rapid data exploration and basic analysis without editing files or install dependencies (`No Code` mode)
+- more complex analysis and processing with Python (`Supervised Coding` mode)
+
+Start in `No Code` mode, then switch to `Supervised Coding` when prompted by the agent.
+
 See [VS Code docs on custom chat modes](https://code.visualstudio.com/docs/copilot/chat/chat-modes#_custom-chat-modes).
 
 ### Non-NWB file support
