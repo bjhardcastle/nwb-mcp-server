@@ -19,6 +19,7 @@ import logging
 from collections.abc import AsyncIterator, Iterable
 
 import fastmcp
+import fsspec.config
 import lazynwb
 import polars as pl
 import pydantic
@@ -58,6 +59,10 @@ class ServerConfig(pydantic_settings.BaseSettings):
         default=1,
         description="Number of NWB files to scan to infer schema for all files",
     )
+    anon: bool = pydantic.Field(
+        default=False,
+        description="Use anonymous S3 access via fsspec. Useful for accessing public S3 buckets without credentials.",
+    )
     unattended: bool = pydantic.Field(
         default=False,
         description="Run the server in unattended mode, where it does not prompt the user for input. Useful for automated tasks.",
@@ -71,6 +76,10 @@ class ServerConfig(pydantic_settings.BaseSettings):
 
 config = ServerConfig()  # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
+
+if config.anon:
+    logger.info("Configuring fsspec for anonymous S3 access")
+    fsspec.config.conf["s3"] = {"anon": True}
 
 UNATTENDED_RULE = (
     (

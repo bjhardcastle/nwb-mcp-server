@@ -79,6 +79,7 @@ should be used).
 | glob_pattern         | A glob pattern to apply to `root_dir` to locate NWB files. Use `"**/*.nwb"` for sub-directories. | `"*.nwb"`    |
 | tables               | Restrict the list of NWB tables to use, e.g. `["trials", "intervals/epochs"]`                            | `null`     |
 | infer_schema_length  | Number of NWB files to scan to infer schema for all. Affects server startup time.                       | `1`             |
+| anon                 | Use anonymous S3 access via fsspec (for public S3 buckets)                                       | `false`          |
 | unattended           | Run the server in unattended mode (no user prompts, for automation)                              | `false`          |
 | table_element_limit  | Max elements (columns x rows) allowed in a table returned by a SQL query                         | `500`            |
 
