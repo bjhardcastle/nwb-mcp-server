@@ -259,7 +259,7 @@ def nwb_file_search_code_snippet() -> str:
     return f"nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))"
 
 
-@server.tool(enabled=True)
+@server.tool()
 async def execute_query(query: str, ctx: fastmcp.Context) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
@@ -286,7 +286,7 @@ def format_column_names(columns: Iterable[str] | None) -> str:
     return ", ".join(repr(c) for c in columns).replace("'", '"')
 
 
-@server.tool(enabled=True)
+@server.tool()
 async def preview_table_values(
     table: str,
     ctx: fastmcp.Context,
@@ -411,7 +411,7 @@ Please provide a detailed response to a scientist posing the following query:
     analysis on a small subset of the data first. The user can then run the full analysis offline.
 </instructions>
 
-{ABOUT}
+{ABOUT}                 
 """
 
 
