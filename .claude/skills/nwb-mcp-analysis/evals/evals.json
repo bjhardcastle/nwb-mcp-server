@@ -1,0 +1,20 @@
+{
+  "skill_name": "nwb-mcp-analysis",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "What tables are available and how many sessions does this dataset have?",
+      "expected_output": "Agent checks file count via get_nwb_paths, lists tables via get_tables, then queries session count — rather than diving straight into a SELECT COUNT query on a potentially large table."
+    },
+    {
+      "id": 1,
+      "prompt": "Show me the average firing rate of well-isolated units across brain areas",
+      "expected_output": "Agent applies a QC filter (default_qc or quality column) in the SQL query and aggregates by brain area, with filtered projection to avoid loading all columns."
+    },
+    {
+      "id": 2,
+      "prompt": "Can you show me LFP activity in visual cortex over time?",
+      "expected_output": "Agent warns that timeseries data can be enormous across many files, and offers the user a choice between time-window slicing or subsampling before attempting any query."
+    }
+  ]
+}
