@@ -67,9 +67,12 @@ class ServerConfig(pydantic_settings.BaseSettings):
         default=False,
         description="Run the server in unattended mode, where it does not prompt the user for input. Useful for automated tasks.",
     )
-    table_element_limit: int = pydantic.Field(
-        default=500,
-        description="Maximum number of elements (columns x rows) allowed in a table returned by a SQL query without raising an error. This is to avoid overwhelming the context window.",
+    max_result_rows: int = pydantic.Field(
+        default=20,
+        description=(
+            "Maximum number of rows returned by a SQL query. Keeps results within a manageable"
+            " size for LLM context windows. Use allow_large_output on execute_query to bypass per-call."
+        ),
     )
     ignored_args: pydantic_settings.CliUnknownArgs
 
@@ -128,15 +131,6 @@ b. Use `lazynwb` to interact with tables in the NWB files:
    unnecessary columns, particularly array- or list-like columns.
    v. Then use `.collect()` to execute the query and get a polars `DataFrame`.
 </code_mode>
-
-<nwb>
-1. The `session` or `general` tables may contain useful metadata about the session, such as
-   `experiment_description`.
-2. Use the `default_qc` Boolean column in the `units` table, which indicates whether the unit
-   passed quality control checks.
-c. Be extremely cautious when loading data from TimeSeries tables (tables with `timestamps` and
-   `data` columns) as they can be large.
-</nwb>
 
 </mcp>
 """
@@ -244,6 +238,9 @@ server = fastmcp.FastMCP(
 def get_tables(ctx: fastmcp.Context) -> list[str]:
     """Returns a list of available tables in the NWB files. Each table includes data from multiple
     NWB files, where one file includes data from a single session for a single subject.
+    Note: NWB's `general` metadata group is renamed to `session` by this server, so it may not be
+    recognized as a metadata table from the name alone. Check it early when you need
+    experiment-level context (e.g. `experiment_description`, subject info).
     """
     logger.info("Fetching available tables from NWB files")
     return ctx.request_context.lifespan_context.db.tables()
@@ -251,7 +248,10 @@ def get_tables(ctx: fastmcp.Context) -> list[str]:
 
 @server.tool()
 def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.DataType]:
-    """Returns the schema of a specific table, mapping column names to their data types."""
+    """Returns the schema of a specific table, mapping column names to their data types.
+    Schemas are normalized across all files: a column present in the schema may still be null
+    for many files, and a null column in one file doesn't mean the data is absent across all files.
+    """
     if not table_name:
         raise ValueError("Table name cannot be empty")
     logger.info(f"Fetching schema for table: {table_name}")
@@ -269,14 +269,25 @@ def nwb_file_search_code_snippet() -> str:
 
 
 @server.tool()
-async def execute_query(query: str, ctx: fastmcp.Context) -> str:
+async def execute_query(
+    query: str,
+    ctx: fastmcp.Context,
+    allow_large_output: bool = False,
+) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
 
-    Queries should be designed to return a manageable amount of data for interpretation by an LLM,
-    ideally less than 20 rows. If too much data is returned an error will be raised.
+    Results are capped at max_result_rows (default 20). Refine queries with WHERE/GROUP BY/LIMIT
+    to stay within this limit.
+
+    Set allow_large_output=True ONLY when the result will be written to a file or piped to an
+    external tool — do NOT use it for inline analysis, as large results will fill the context window.
+
+    Tables are lazily loaded — aggregations like COUNT(*) or COUNT(DISTINCT ...) force full
+    materialization and can be slow on large datasets. When selecting array/list columns
+    (e.g. spike_times, waveform_mean), always pre-filter rows using scalar columns first.
     """
-    return await _execute_query(query, ctx)
+    return await _execute_query(query, ctx, allow_large_output=allow_large_output)
 
 
 def format_table_name(table: str) -> str:
@@ -303,14 +314,15 @@ async def preview_table_values(
     n_rows: int = 1,
 ) -> str:
     """Returns the first row of a table to preview values. Prefer `get_table_schema` to get the
-    table schema. Only use this if absolutely necessary."""
+    table schema. Only use this if absolutely necessary — even a 1-row preview can be slow on
+    remote/cloud NWB files."""
     column_query = format_column_names(columns)
     query = f"SELECT {column_query} FROM {format_table_name(table)} LIMIT {n_rows};"
     logger.info(f"Previewing table values with: {column_query}")
     return await _execute_query(query, ctx)
 
 
-async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
+async def _execute_query(query: str, ctx: fastmcp.Context, allow_large_output: bool = False) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
     """
@@ -323,9 +335,11 @@ async def _execute_query(query: str, ctx: fastmcp.Context) -> str:
     if df.is_empty():
         logger.warning("SQL query returned no results")
         return "[]"
-    if (elements := df.shape[0] * df.shape[1]) > config.table_element_limit:
+    if not allow_large_output and df.shape[0] > config.max_result_rows:
         raise ValueError(
-            f"SQL query returned too many elements ({elements}): please refine the query by aggregating or filtering to avoid filling the context window with data."
+            f"Query returned {df.shape[0]} rows, exceeding the {config.max_result_rows}-row limit. "
+            "Refine with WHERE/GROUP BY/LIMIT, or set allow_large_output=True only if the result "
+            "will be written to a file (not read into context)."
         )
     logger.info(f"Query executed successfully, serializing {len(df)} rows as JSON")
     # return _to_markdown(df)
@@ -359,7 +373,10 @@ def nwb_paths() -> list[str]:
 
 @server.tool()
 def get_nwb_paths() -> list[str]:
-    """Get the NWB paths."""
+    """Returns the list of all NWB file paths in the dataset (one file per session/subject).
+    Call early to understand the scale of the dataset — file count shapes how to interpret
+    aggregate query results (e.g. per-file breakdowns vs. overall averages).
+    """
     return [p.as_posix() for p in _get_nwb_sources()]
 
 
