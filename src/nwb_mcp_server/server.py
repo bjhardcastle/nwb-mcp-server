@@ -68,7 +68,7 @@ class ServerConfig(pydantic_settings.BaseSettings):
         description="Run the server in unattended mode, where it does not prompt the user for input. Useful for automated tasks.",
     )
     max_result_rows: int = pydantic.Field(
-        default=20,
+        default=50,
         description=(
             "Maximum number of rows returned by a SQL query. Keeps results within a manageable"
             " size for LLM context windows. Use allow_large_output on execute_query to bypass per-call."
@@ -277,7 +277,7 @@ async def execute_query(
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
 
-    Results are capped at max_result_rows (default 20). Refine queries with WHERE/GROUP BY/LIMIT
+    Results are capped at max_result_rows (default 50). Refine queries with WHERE/GROUP BY/LIMIT
     to stay within this limit.
 
     Set allow_large_output=True ONLY when the result will be written to a file or piped to an
