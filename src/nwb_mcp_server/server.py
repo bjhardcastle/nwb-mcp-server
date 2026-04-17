@@ -10,8 +10,10 @@ import os
 os.environ["RUST_BACKTRACE"] = "1"  # enable Rust backtraces for lazynwb
 
 import asyncio
+import concurrent.futures
 import contextlib
 import dataclasses
+import fnmatch
 import functools
 import importlib.metadata
 import io
@@ -21,6 +23,8 @@ from collections.abc import AsyncIterator, Iterable
 import fastmcp
 import fsspec.config
 import lazynwb
+import lazynwb.dandi
+import lazynwb.utils
 import polars as pl
 import pydantic
 import pydantic_settings
@@ -50,6 +54,18 @@ class ServerConfig(pydantic_settings.BaseSettings):
     glob_pattern: str = pydantic.Field(
         default="**/*.nwb",
         description="A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. '*.zarr.nwb'",
+    )
+    dandiset_id: str | None = pydantic.Field(
+        default=None,
+        description="DANDI archive dandiset ID (e.g. '000363'). When set, overrides root_dir/glob_pattern and loads NWB files from DANDI. Note: anon has no effect for DANDI (presigned HTTPS URLs bypass fsspec S3).",
+    )
+    dandiset_version: str | None = pydantic.Field(
+        default=None,
+        description="Specific dandiset version (e.g. '0.231012.2129'). If None, uses the most recently published version.",
+    )
+    dandiset_path_filter: str | None = pydantic.Field(
+        default=None,
+        description="fnmatch-style pattern to filter DANDI assets by path, e.g. 'sub-619293/*.nwb' or 'sub-*/sub-*_ecephys.nwb'. Only used when dandiset_id is set.",
     )
     tables: list[str] = pydantic.Field(
         default_factory=list,
@@ -104,12 +120,22 @@ RULES = f"""
 </rules>
 """
 
+_CODE_MODE_SNIPPET = (
+    f"Use `nwb_file_search_code_snippet` to get the correct code for locating NWB files"
+    f" from DANDI dandiset {config.dandiset_id!r}"
+    + (f" version {config.dandiset_version!r}" if config.dandiset_version else " (latest version)")
+    + ".\n   Presigned URLs expire after ~1 hour; re-run the snippet to refresh if needed."
+    if config.dandiset_id
+    else f"Use `upath` to search for NWB files:"
+    f" `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`"
+)
+
 ABOUT = f"""
 <mcp>
 The NWB MCP server provides tools for querying a read-only virtual database of NWB data, with two modes of
 operation:
 1. **No Code Mode**: The agent itself performs queries. This can be used for simple analyses on smaller datasets and for
-gaining an initial understanding of the structure of the data. 
+gaining an initial understanding of the structure of the data.
 2. **Code Mode**: The agent writes files in the workspace containing Python code. No Code Mode
 should be used first to help plan the files that should be written.
 
@@ -122,7 +148,7 @@ c. Avoid loading TimeSeries tables.
 
 <code_mode>
 The agent can write files containing Python code to interact with the NWB files using the `lazynwb` package.
-a. Use `upath` to search for NWB files: `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`
+a. {_CODE_MODE_SNIPPET}
 b. Use `lazynwb` to interact with tables in the NWB files:
    i. Get a polars `LazyFrame` for a table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
    ii. Write queries against the `LazyFrame` using standard polars methods.
@@ -136,12 +162,69 @@ b. Use `lazynwb` to interact with tables in the NWB files:
 """
 
 
-@functools.cache
-def _get_nwb_sources() -> list[upath.UPath]:
-    """Get the list of NWB files based on the provided root directory and glob pattern."""
-    # TODO make async
+def _get_dandiset_sources() -> list[upath.UPath]:
+    """Get NWB file sources from a DANDI dandiset via presigned S3 URLs."""
+    assert config.dandiset_id is not None
+    dandiset_id = config.dandiset_id
+    version = config.dandiset_version
+
     logger.info(
-        f"Searching for NWB files in {config.root_dir} with pattern {config.glob_pattern}"
+        f"Fetching assets from DANDI dandiset {dandiset_id!r}"
+        + (f" version {version!r}" if version else " (latest version)")
+    )
+    if version is None:
+        version = lazynwb.dandi._get_most_recent_dandiset_version(dandiset_id)
+        logger.info(f"Resolved dandiset version: {version!r}")
+
+    assets = lazynwb.dandi._get_dandiset_assets(dandiset_id, version=version)
+    logger.info(f"Found {len(assets)} total assets in dandiset {dandiset_id!r}")
+
+    if config.dandiset_path_filter:
+        original_count = len(assets)
+        assets = [a for a in assets if fnmatch.fnmatchcase(a["path"], config.dandiset_path_filter)]
+        logger.info(
+            f"Filtered to {len(assets)} assets matching {config.dandiset_path_filter!r}"
+            f" (from {original_count})"
+        )
+
+    if not assets:
+        raise ValueError(
+            f"No assets found in dandiset {dandiset_id!r} version {version!r}"
+            + (
+                f" matching path filter {config.dandiset_path_filter!r}"
+                if config.dandiset_path_filter
+                else ""
+            )
+        )
+
+    logger.info(f"Fetching presigned S3 URLs for {len(assets)} assets (parallel)")
+    executor = lazynwb.utils.get_threadpool_executor()
+    future_to_asset: dict[concurrent.futures.Future[str], dict] = {
+        executor.submit(
+            lazynwb.dandi._get_asset_s3_url, dandiset_id, asset["asset_id"], version
+        ): asset
+        for asset in assets
+    }
+    s3_urls: list[str] = []
+    for future in concurrent.futures.as_completed(future_to_asset):
+        asset = future_to_asset[future]
+        try:
+            s3_urls.append(future.result())
+        except Exception as exc:
+            logger.warning(f"Failed to get S3 URL for asset {asset.get('path')!r}: {exc!r}")
+
+    if not s3_urls:
+        raise ValueError(f"Failed to retrieve any S3 URLs from dandiset {dandiset_id!r}")
+
+    logger.info(f"Retrieved {len(s3_urls)} S3 URLs from DANDI")
+    return [upath.UPath(url) for url in s3_urls]
+
+
+@functools.cache
+def _get_local_or_remote_nwb_sources() -> list[upath.UPath]:
+    """Get NWB files from the local/S3 filesystem via glob pattern."""
+    logger.info(
+        f"Searching for NWB files in {config.root_dir!r} with pattern {config.glob_pattern!r}"
     )
     nwb_paths = list(upath.UPath(config.root_dir).glob(config.glob_pattern))
     if not nwb_paths:
@@ -150,6 +233,18 @@ def _get_nwb_sources() -> list[upath.UPath]:
         )
     logger.info(f"Found {len(nwb_paths)} data sources")
     return nwb_paths
+
+
+def _get_nwb_sources() -> list[upath.UPath]:
+    """Get NWB file sources, routing between DANDI and local/remote filesystem."""
+    if config.dandiset_id:
+        if config.root_dir != "data":
+            logger.warning(
+                f"Both dandiset_id={config.dandiset_id!r} and root_dir={config.root_dir!r} are set."
+                " Using DANDI (root_dir/glob_pattern are ignored)."
+            )
+        return _get_dandiset_sources()
+    return _get_local_or_remote_nwb_sources()
 
 
 @dataclasses.dataclass
@@ -263,8 +358,31 @@ def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.Data
 @server.tool()
 def nwb_file_search_code_snippet() -> str:
     """Returns a code snippet for finding the user's NWB files. `upath` is a 3rd-party package that implements the pathlib
-    interface for local and cloud storage: when installing, its name on PyPI is `universal-pathlib`
+    interface for local and cloud storage: when installing, its name on PyPI is `universal-pathlib`.
+    For DANDI datasets, the snippet uses `lazynwb.dandi` to fetch presigned S3 URLs.
     """
+    if config.dandiset_id:
+        filter_lines = (
+            f"\nassets = [a for a in assets if fnmatch.fnmatch(a['path'], {config.dandiset_path_filter!r})]"
+            if config.dandiset_path_filter
+            else ""
+        )
+        return (
+            f"import concurrent.futures\n"
+            f"import fnmatch\n"
+            f"import lazynwb.dandi\n"
+            f"import upath\n"
+            f"\n"
+            f"dandiset_id = {config.dandiset_id!r}\n"
+            f"version = {config.dandiset_version!r}  # None = latest\n"
+            f"assets = lazynwb.dandi._get_dandiset_assets(dandiset_id, version=version)"
+            f"{filter_lines}\n"
+            f"executor = concurrent.futures.ThreadPoolExecutor()\n"
+            f"nwb_paths = list(upath.UPath(url) for url in executor.map(\n"
+            f"    lambda a: lazynwb.dandi._get_asset_s3_url(dandiset_id, a['asset_id'], version),\n"
+            f"    assets,\n"
+            f"))"
+        )
     return f"nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))"
 
 
