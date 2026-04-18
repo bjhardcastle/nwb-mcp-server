@@ -604,7 +604,9 @@ def _build_dataset_handle(
 ) -> DatasetHandle:
     logger.info(f"Initializing SQL connection for source: {source_spec.to_dict()}")
     resolved_source_spec, sources = _get_nwb_sources(source_spec)
-    if not source_spec.is_dandiset and not any(".nwb" in str(s).lower() for s in sources):
+    if not source_spec.is_dandiset and not any(
+        ".nwb" in str(s).lower() for s in sources
+    ):
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
         sql_context = create_sql_context_non_nwb(sources)
     else:
