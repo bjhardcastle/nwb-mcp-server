@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 logger.info(
-    f"Starting MCP NWB Server with lazynwb v{importlib.metadata.version('lazynwb')}"
+    f"Starting MCP NWB Server v{importlib.metadata.version('nwb-mcp-server')} with lazynwb v{importlib.metadata.version('lazynwb')}"
 )
 
 DEFAULT_GLOB_PATTERN = "**/*.nwb"
