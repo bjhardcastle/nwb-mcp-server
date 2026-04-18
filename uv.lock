@@ -1567,7 +1567,7 @@ wheels = [
 
 [[package]]
 name = "nwb-mcp-server"
-version = "0.1.5"
+version = "0.1.6"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -1596,7 +1596,7 @@ testing = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.10.4" },
-    { name = "lazynwb", specifier = ">=0.2.71" },
+    { name = "lazynwb", specifier = ">=0.2.89" },
 ]
 
 [package.metadata.requires-dev]

@@ -116,7 +116,9 @@ class SourceSpec:
         )
 
     @classmethod
-    def from_local(cls, root_dir: str, glob_pattern: str = DEFAULT_GLOB_PATTERN) -> "SourceSpec":
+    def from_local(
+        cls, root_dir: str, glob_pattern: str = DEFAULT_GLOB_PATTERN
+    ) -> "SourceSpec":
         return cls(root_dir=root_dir, glob_pattern=glob_pattern)
 
 
@@ -223,7 +225,9 @@ class SourceManager:
 
     def preload_default_dataset(self) -> DatasetHandle | None:
         if not self.default_source.is_configured:
-            logger.info("No startup dataset configured; sessions must select a source explicitly")
+            logger.info(
+                "No startup dataset configured; sessions must select a source explicitly"
+            )
             return None
         dataset = self._get_or_create_dataset(self.default_source)
         self.default_source = dataset.source_spec
@@ -239,7 +243,9 @@ class SourceManager:
             raise ValueError(NO_SOURCE_CONFIGURED_MESSAGE)
         return self._get_or_create_dataset(active_source)
 
-    def set_active_source(self, session_id: str, source_spec: SourceSpec) -> DatasetHandle:
+    def set_active_source(
+        self, session_id: str, source_spec: SourceSpec
+    ) -> DatasetHandle:
         dataset = self._get_or_create_dataset(source_spec)
         with self._lock:
             self._session_sources[session_id] = dataset.source_spec
@@ -296,6 +302,7 @@ RULES = f"""
 6. {UNATTENDED_RULE}
 </rules>
 """
+
 
 def _build_code_mode_snippet_text(source_spec: SourceSpec) -> str:
     if not source_spec.is_configured:
@@ -391,9 +398,7 @@ def _build_nwb_file_search_code_snippet(source_spec: SourceSpec) -> str:
             f"    assets,\n"
             f"))"
         )
-    return (
-        f"nwb_paths = list(upath.UPath({source_spec.root_dir!r}).glob({source_spec.glob_pattern!r}))"
-    )
+    return f"nwb_paths = list(upath.UPath({source_spec.root_dir!r}).glob({source_spec.glob_pattern!r}))"
 
 
 @dataclasses.dataclass
@@ -429,7 +434,9 @@ def _get_default_source_for_request(ctx: fastmcp.Context) -> SourceSpec:
     return _get_app_context(ctx).source_manager.default_source
 
 
-def _format_dataset_status(dataset: DatasetHandle, *, default_source: SourceSpec) -> dict[str, Any]:
+def _format_dataset_status(
+    dataset: DatasetHandle, *, default_source: SourceSpec
+) -> dict[str, Any]:
     return {
         "active_source": dataset.source_spec.to_dict(),
         "is_default_source": dataset.source_spec == default_source,
@@ -450,7 +457,9 @@ def _format_source_status(
     }
 
 
-def _get_dandiset_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upath.UPath]]:
+def _get_dandiset_sources(
+    source_spec: SourceSpec,
+) -> tuple[SourceSpec, list[upath.UPath]]:
     """Get NWB file sources from a DANDI dandiset via presigned S3 URLs."""
     assert source_spec.dandiset_id is not None
     dandiset_id = source_spec.dandiset_id
@@ -469,7 +478,11 @@ def _get_dandiset_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upa
 
     if source_spec.dandiset_path_filter:
         original_count = len(assets)
-        assets = [a for a in assets if fnmatch.fnmatchcase(a["path"], source_spec.dandiset_path_filter)]
+        assets = [
+            a
+            for a in assets
+            if fnmatch.fnmatchcase(a["path"], source_spec.dandiset_path_filter)
+        ]
         logger.info(
             f"Filtered to {len(assets)} assets matching {source_spec.dandiset_path_filter!r}"
             f" (from {original_count})"
@@ -499,17 +512,23 @@ def _get_dandiset_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upa
         try:
             s3_urls.append(future.result())
         except Exception as exc:
-            logger.warning(f"Failed to get S3 URL for asset {asset.get('path')!r}: {exc!r}")
+            logger.warning(
+                f"Failed to get S3 URL for asset {asset.get('path')!r}: {exc!r}"
+            )
 
     if not s3_urls:
-        raise ValueError(f"Failed to retrieve any S3 URLs from dandiset {dandiset_id!r}")
+        raise ValueError(
+            f"Failed to retrieve any S3 URLs from dandiset {dandiset_id!r}"
+        )
 
     logger.info(f"Retrieved {len(s3_urls)} S3 URLs from DANDI")
     resolved_source = dataclasses.replace(source_spec, dandiset_version=version)
     return resolved_source, [upath.UPath(url) for url in s3_urls]
 
 
-def _get_local_or_remote_nwb_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upath.UPath]]:
+def _get_local_or_remote_nwb_sources(
+    source_spec: SourceSpec,
+) -> tuple[SourceSpec, list[upath.UPath]]:
     """Get NWB files from the local/S3 filesystem via glob pattern."""
     if source_spec.root_dir is None or source_spec.glob_pattern is None:
         raise ValueError(NO_SOURCE_CONFIGURED_MESSAGE)
@@ -594,7 +613,9 @@ def _build_dataset_handle(
             rename_general_metadata=True,  # renames the metadata in 'general' as 'session'
         )
     logger.info("SQL connection initialized successfully")
-    return DatasetHandle(source_spec=resolved_source_spec, sources=sources, db=sql_context)
+    return DatasetHandle(
+        source_spec=resolved_source_spec, sources=sources, db=sql_context
+    )
 
 
 @contextlib.asynccontextmanager
@@ -669,7 +690,9 @@ def use_local_source(
         ctx.session_id,
         SourceSpec.from_local(root_dir=root_dir, glob_pattern=glob_pattern),
     )
-    return _format_dataset_status(dataset, default_source=_get_default_source_for_request(ctx))
+    return _format_dataset_status(
+        dataset, default_source=_get_default_source_for_request(ctx)
+    )
 
 
 @server.tool()
@@ -688,7 +711,9 @@ def use_dandiset_source(
             dandiset_path_filter=dandiset_path_filter,
         ),
     )
-    return _format_dataset_status(dataset, default_source=_get_default_source_for_request(ctx))
+    return _format_dataset_status(
+        dataset, default_source=_get_default_source_for_request(ctx)
+    )
 
 
 @server.tool()
@@ -700,7 +725,9 @@ def reset_active_source(ctx: fastmcp.Context) -> dict[str, Any]:
             _get_selected_source_for_request(ctx),
             default_source=_get_default_source_for_request(ctx),
         )
-    return _format_dataset_status(dataset, default_source=_get_default_source_for_request(ctx))
+    return _format_dataset_status(
+        dataset, default_source=_get_default_source_for_request(ctx)
+    )
 
 
 @server.tool()
@@ -766,7 +793,9 @@ async def preview_table_values(
     return await _execute_query(query, ctx)
 
 
-async def _execute_query(query: str, ctx: fastmcp.Context, allow_large_output: bool = False) -> str:
+async def _execute_query(
+    query: str, ctx: fastmcp.Context, allow_large_output: bool = False
+) -> str:
     """Executes a SQL query against a virtual read-only NWB database,
     returning results as JSON. Uses PostgreSQL syntax and functions for basic analysis.
     """
