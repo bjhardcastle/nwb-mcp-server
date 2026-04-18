@@ -1,42 +1,73 @@
 ---
 name: nwb-mcp-analysis
-description: NWB data exploration and analysis via the NWB MCP server tools. Use this skill whenever the user wants to query, explore, or analyze a neuroscience NWB dataset and MCP tools like get_tables, execute_query, or get_nwb_paths are available. Trigger for questions about neural recordings, spike sorting results, trials, units, timeseries, or brain regions.
+description: NWB data exploration and analysis via the NWB MCP server tools. Use this skill whenever the user wants to query, explore, or analyze a neuroscience NWB dataset and MCP tools like get_active_source, get_tables, execute_query, or get_nwb_paths are available. Trigger for questions about neural recordings, spike sorting results, trials, units, timeseries, or brain regions.
 ---
 
 # NWB MCP Analysis
 
-Two-phase workflow: **explore with SQL first, then incorporate findings into code if the user needs more complex analysis or re-runnable code**.
+Two-phase workflow: explore with SQL first, then incorporate findings into code if the user needs more complex analysis or re-runnable code.
+
+---
+
+## Phase 0: Confirm The Active Source
+
+The server may start with no dataset configured at all. Do not assume a preset `root_dir` or `dandiset_id` exists.
+
+Recommended order before any schema or SQL work:
+1. Call `get_active_source`
+2. If the source is unset, choose one in chat:
+   - `use_local_source(root_dir="...")`
+   - `use_dandiset_source(dandiset_id="000363")`
+3. If the user wants to go back to any startup preset, call `reset_active_source`
+
+Important behavior:
+- Source selection is scoped to the current chat session, not global across all clients. You can still change the active source multiple times within the same chat session if needed, accepting the cost of rescanning or reinitializing the new dataset.
+- `nwb_file_search_code_snippet` depends on the active source and will fail until one is selected.
+- If a dataset-dependent tool says no dataset is active, switch sources first instead of retrying the same query.
 
 ---
 
 ## Phase 1: Explore
 
-**Recommended order:**
-1. `get_tables` — see what's available
-2. `get_nwb_paths` — check how many files are in the dataset before diving in; the count shapes how you interpret aggregate results
-3. `get_table_schema` on tables of interest
-4. `execute_query` for targeted analysis
+Recommended order:
+1. `get_active_source` if you have not checked the source yet
+2. `get_tables` to see what is available
+3. `get_nwb_paths` to check how many files are in the dataset before diving in; the count shapes how you interpret aggregate results
+4. `get_table_schema` on tables of interest
+5. `execute_query` for targeted analysis
 
-**Avoid `preview_table_values`** unless you need to see actual cell values — `get_table_schema` is faster and cheaper for schema discovery.
+Avoid `preview_table_values` unless you need actual cell values. `get_table_schema` is faster and cheaper for schema discovery.
 
-**TimeSeries tables** (those with `timestamps` and `data` columns) are sampled at high rates and, concatenated across many files, can be enormous. Before querying, warn the user and propose a strategy: (a) **slice** to specific time windows (natural fit if the user wants per-trial segments), or (b) **subsample** every Nth row for a representative overview. Ask which they prefer unless context makes it obvious (e.g. trial-aligned analysis → slicing).
+TimeSeries tables (those with `timestamps` and `data` columns) can be huge when concatenated across many files or sampled at high rates. Before querying them, warn the user and propose a strategy:
+- slice to specific time windows
+- subsample every Nth row for a representative overview
 
-**`session` table** — check this early for experiment-level metadata. See `get_tables` for details on the naming.
+Ask which approach they prefer unless the context already makes the choice obvious (e.g. slicing is a natural fit for trial-aligned analysis).
 
-**Table names from `get_tables` are full NWB paths** (e.g. `/intervals/trials`, `/processing/ecephys/LFP/LFP`) — always double-quote them in SQL: `SELECT start_time, stop_time, is_response FROM "/intervals/trials"`.
+Check the `session` table early for experiment-level metadata.
+
+Table names from `get_tables` are full NWB paths, for example `/intervals/trials` or `/processing/ecephys/LFP/LFP`. Always double-quote them in SQL:
+
+```sql
+SELECT start_time, stop_time, is_response
+FROM "/intervals/trials"
+```
 
 ---
 
-## Phase 2: Code (when SQL isn't enough)
+## Phase 2: Code
 
 Switch to Python when the analysis requires custom functions, complex data processing, or visualizations.
 
-1. Call `nwb_file_search_code_snippet` to get the path-finding code for this dataset
-2. Follow the `nwb-data-analysis` skill for `lazynwb`/polars patterns and best practices
-3. **Don't hard-code data from SQL exploration** — e.g. specific session IDs or counts observed during Phase 1. Code should generalize to any set of NWB files with the same organization. Recreate filtering and selection logic in code.
+1. Call `nwb_file_search_code_snippet` to get the path-finding code for the current dataset
+2. Follow the `nwb-data-analysis` skill for `lazynwb` and polars patterns
+3. Do not hard-code observations from SQL exploration, such as specific session IDs or counts seen during Phase 1. Recreate the filtering and selection logic in code so it generalizes to the active dataset.
 
 ---
 
 ## Notes
-- The MCP server uses `lazynwb.get_sql_context()` under the hood to create a virtual SQL database from one or more NWB files, with tables concatenated across files. Schemas are normalized across files (see `get_table_schema` for implications).
-- `execute_query` results are capped at `max_result_rows` (default 50). If a query exceeds this, refine with `WHERE`/`GROUP BY`/`LIMIT`. `allow_large_output=True` bypasses the cap — only use it when saving results directly to a file, since large outputs will fill the context window.
+
+- The MCP server uses `lazynwb.get_sql_context()` under the hood to create a virtual SQL database from one or more NWB files, with tables concatenated across files.
+- Schemas are normalized across files, so a column can appear in the schema even when it is null for many files.
+- `execute_query` results are capped at `max_result_rows` by default. If a query exceeds the cap, refine it with `WHERE`, `GROUP BY`, or `LIMIT`.
+- Use `allow_large_output=True` only when the result is being written directly to a file or another tool output, not for inline chat analysis.

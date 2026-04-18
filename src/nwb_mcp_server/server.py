@@ -14,11 +14,12 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import fnmatch
-import functools
 import importlib.metadata
 import io
 import logging
+import threading
 from collections.abc import AsyncIterator, Iterable
+from typing import Any
 
 import fastmcp
 import fsspec.config
@@ -37,6 +38,87 @@ logger.info(
     f"Starting MCP NWB Server with lazynwb v{importlib.metadata.version('lazynwb')}"
 )
 
+DEFAULT_GLOB_PATTERN = "**/*.nwb"
+NO_SOURCE_CONFIGURED_MESSAGE = (
+    "No dataset is currently active. First select one with "
+    "`use_local_source(root_dir=...)` or `use_dandiset_source(dandiset_id=...)`. "
+    "If you control server startup config, you can also preset `--root_dir`/`--glob_pattern` "
+    "or `--dandiset_id`."
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class SourceSpec:
+    """Describes the active data source for a session."""
+
+    root_dir: str | None = None
+    glob_pattern: str | None = None
+    dandiset_id: str | None = None
+    dandiset_version: str | None = None
+    dandiset_path_filter: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.root_dir is not None and not self.root_dir:
+            raise ValueError("root_dir cannot be empty")
+        if self.glob_pattern is not None and not self.glob_pattern:
+            raise ValueError("glob_pattern cannot be empty")
+        if self.dandiset_id is not None and not self.dandiset_id:
+            raise ValueError("dandiset_id cannot be empty")
+        if self.root_dir is not None and self.glob_pattern is None:
+            object.__setattr__(self, "glob_pattern", DEFAULT_GLOB_PATTERN)
+        if self.dandiset_id is None:
+            if self.dandiset_version is not None:
+                raise ValueError("dandiset_version requires dandiset_id")
+            if self.dandiset_path_filter is not None:
+                raise ValueError("dandiset_path_filter requires dandiset_id")
+
+    @property
+    def mode(self) -> str:
+        if self.is_dandiset:
+            return "dandiset"
+        if self.is_filesystem:
+            return "filesystem"
+        return "unset"
+
+    @property
+    def is_dandiset(self) -> bool:
+        return self.dandiset_id is not None
+
+    @property
+    def is_filesystem(self) -> bool:
+        return self.root_dir is not None and not self.is_dandiset
+
+    @property
+    def is_configured(self) -> bool:
+        return self.is_dandiset or self.is_filesystem
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "mode": self.mode,
+            "root_dir": self.root_dir,
+            "glob_pattern": self.glob_pattern,
+            "dandiset_id": self.dandiset_id,
+            "dandiset_version": self.dandiset_version,
+            "dandiset_path_filter": self.dandiset_path_filter,
+        }
+
+    @classmethod
+    def from_dandiset(
+        cls,
+        dandiset_id: str,
+        dandiset_version: str | None = None,
+        dandiset_path_filter: str | None = None,
+    ) -> "SourceSpec":
+        return cls(
+            dandiset_id=dandiset_id,
+            dandiset_version=dandiset_version,
+            dandiset_path_filter=dandiset_path_filter,
+        )
+
+    @classmethod
+    def from_local(cls, root_dir: str, glob_pattern: str = DEFAULT_GLOB_PATTERN) -> "SourceSpec":
+        return cls(root_dir=root_dir, glob_pattern=glob_pattern)
+
 
 class ServerConfig(pydantic_settings.BaseSettings):
     """Configuration for the NWB MCP Server."""
@@ -47,13 +129,19 @@ class ServerConfig(pydantic_settings.BaseSettings):
         cli_ignore_unknown_args=True,
     )
 
-    root_dir: str = pydantic.Field(
-        default="data",
-        description="Root directory to search for NWB files",
+    root_dir: str | None = pydantic.Field(
+        default=None,
+        description=(
+            "Optional root directory to search for NWB files. If omitted and no dandiset_id is"
+            " set, the server starts without an active dataset and the user must choose one in chat."
+        ),
     )
-    glob_pattern: str = pydantic.Field(
-        default="**/*.nwb",
-        description="A glob pattern to apply (non-recursively) to `root-dir` to locate NWB files (or folders), e.g. '*.zarr.nwb'",
+    glob_pattern: str | None = pydantic.Field(
+        default=None,
+        description=(
+            "Optional glob pattern to apply to `root-dir` to locate NWB files (or folders), e.g."
+            " '*.zarr.nwb'. Defaults to '**/*.nwb' when root_dir is set."
+        ),
     )
     dandiset_id: str | None = pydantic.Field(
         default=None,
@@ -92,9 +180,98 @@ class ServerConfig(pydantic_settings.BaseSettings):
     )
     ignored_args: pydantic_settings.CliUnknownArgs
 
+    def default_source_spec(self) -> SourceSpec:
+        if self.dandiset_id is not None:
+            return SourceSpec.from_dandiset(
+                dandiset_id=self.dandiset_id,
+                dandiset_version=self.dandiset_version,
+                dandiset_path_filter=self.dandiset_path_filter,
+            )
+        if self.root_dir is not None:
+            return SourceSpec.from_local(
+                root_dir=self.root_dir,
+                glob_pattern=self.glob_pattern or DEFAULT_GLOB_PATTERN,
+            )
+        return SourceSpec()
+
+
+@dataclasses.dataclass
+class DatasetHandle:
+    """Cached query handle for a concrete dataset selection."""
+
+    source_spec: SourceSpec
+    sources: list[upath.UPath]
+    db: pl.SQLContext
+
+
+class SourceManager:
+    """Tracks the active source per MCP session and caches dataset handles."""
+
+    def __init__(
+        self,
+        *,
+        default_source: SourceSpec,
+        infer_schema_length: int,
+        tables: list[str],
+    ) -> None:
+        self.default_source = default_source
+        self.infer_schema_length = infer_schema_length
+        self.tables = tables
+        self._dataset_cache: dict[SourceSpec, DatasetHandle] = {}
+        self._session_sources: dict[str, SourceSpec] = {}
+        self._lock = threading.RLock()
+
+    def preload_default_dataset(self) -> DatasetHandle | None:
+        if not self.default_source.is_configured:
+            logger.info("No startup dataset configured; sessions must select a source explicitly")
+            return None
+        dataset = self._get_or_create_dataset(self.default_source)
+        self.default_source = dataset.source_spec
+        return dataset
+
+    def get_active_source(self, session_id: str) -> SourceSpec:
+        with self._lock:
+            return self._session_sources.get(session_id, self.default_source)
+
+    def get_active_dataset(self, session_id: str) -> DatasetHandle:
+        active_source = self.get_active_source(session_id)
+        if not active_source.is_configured:
+            raise ValueError(NO_SOURCE_CONFIGURED_MESSAGE)
+        return self._get_or_create_dataset(active_source)
+
+    def set_active_source(self, session_id: str, source_spec: SourceSpec) -> DatasetHandle:
+        dataset = self._get_or_create_dataset(source_spec)
+        with self._lock:
+            self._session_sources[session_id] = dataset.source_spec
+        return dataset
+
+    def reset_active_source(self, session_id: str) -> DatasetHandle | None:
+        with self._lock:
+            self._session_sources.pop(session_id, None)
+        if not self.default_source.is_configured:
+            return None
+        return self._get_or_create_dataset(self.default_source)
+
+    def _get_or_create_dataset(self, requested_source: SourceSpec) -> DatasetHandle:
+        with self._lock:
+            dataset = self._dataset_cache.get(requested_source)
+            if dataset is not None:
+                return dataset
+
+            dataset = _build_dataset_handle(
+                requested_source,
+                infer_schema_length=self.infer_schema_length,
+                table_names=self.tables or None,
+            )
+            self._dataset_cache[dataset.source_spec] = dataset
+            if dataset.source_spec != requested_source:
+                self._dataset_cache[requested_source] = dataset
+            return dataset
+
 
 config = ServerConfig()  # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
+DEFAULT_SOURCE = config.default_source_spec()
 
 if config.anon:
     logger.info("Configuring fsspec for anonymous S3 access")
@@ -120,17 +297,44 @@ RULES = f"""
 </rules>
 """
 
-_CODE_MODE_SNIPPET = (
-    f"Use `nwb_file_search_code_snippet` to get the correct code for locating NWB files"
-    f" from DANDI dandiset {config.dandiset_id!r}"
-    + (f" version {config.dandiset_version!r}" if config.dandiset_version else " (latest version)")
-    + ".\n   Presigned URLs expire after ~1 hour; re-run the snippet to refresh if needed."
-    if config.dandiset_id
-    else f"Use `upath` to search for NWB files:"
-    f" `nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))`"
-)
+def _build_code_mode_snippet_text(source_spec: SourceSpec) -> str:
+    if not source_spec.is_configured:
+        return (
+            "First select a dataset with `use_local_source(root_dir=...)` or "
+            "`use_dandiset_source(dandiset_id=...)`."
+        )
+    if source_spec.is_dandiset:
+        return (
+            "Use `nwb_file_search_code_snippet` to get the correct code for locating NWB files"
+            f" from DANDI dandiset {source_spec.dandiset_id!r}"
+            + (
+                f" version {source_spec.dandiset_version!r}"
+                if source_spec.dandiset_version
+                else " (latest version)"
+            )
+            + ".\n   Presigned URLs expire after ~1 hour; re-run the snippet to refresh if needed."
+        )
+    return (
+        "Use `upath` to search for NWB files:"
+        f" `nwb_paths = list(upath.UPath({source_spec.root_dir!r}).glob({source_spec.glob_pattern!r}))`"
+    )
 
-ABOUT = f"""
+
+def _build_about(source_spec: SourceSpec) -> str:
+    if not source_spec.is_configured:
+        return """
+<mcp>
+No dataset is currently selected.
+
+Before using query tools, choose a dataset in chat with one of:
+1. `use_local_source(root_dir='...')`
+2. `use_dandiset_source(dandiset_id='000363')`
+
+You can inspect the current selection with `get_active_source` and return to any preset startup
+dataset with `reset_active_source`.
+</mcp>
+"""
+    return f"""
 <mcp>
 The NWB MCP server provides tools for querying a read-only virtual database of NWB data, with two modes of
 operation:
@@ -148,7 +352,7 @@ c. Avoid loading TimeSeries tables.
 
 <code_mode>
 The agent can write files containing Python code to interact with the NWB files using the `lazynwb` package.
-a. {_CODE_MODE_SNIPPET}
+a. {_build_code_mode_snippet_text(source_spec)}
 b. Use `lazynwb` to interact with tables in the NWB files:
    i. Get a polars `LazyFrame` for a table with `lazynwb.scan_nwb(nwb_paths, table_name)`.
    ii. Write queries against the `LazyFrame` using standard polars methods.
@@ -162,11 +366,95 @@ b. Use `lazynwb` to interact with tables in the NWB files:
 """
 
 
-def _get_dandiset_sources() -> list[upath.UPath]:
+def _build_nwb_file_search_code_snippet(source_spec: SourceSpec) -> str:
+    if not source_spec.is_configured:
+        raise ValueError(NO_SOURCE_CONFIGURED_MESSAGE)
+    if source_spec.is_dandiset:
+        filter_lines = (
+            f"\nassets = [a for a in assets if fnmatch.fnmatch(a['path'], {source_spec.dandiset_path_filter!r})]"
+            if source_spec.dandiset_path_filter
+            else ""
+        )
+        return (
+            f"import concurrent.futures\n"
+            f"import fnmatch\n"
+            f"import lazynwb.dandi\n"
+            f"import upath\n"
+            f"\n"
+            f"dandiset_id = {source_spec.dandiset_id!r}\n"
+            f"version = {source_spec.dandiset_version!r}  # None = latest\n"
+            f"assets = lazynwb.dandi._get_dandiset_assets(dandiset_id, version=version)"
+            f"{filter_lines}\n"
+            f"executor = concurrent.futures.ThreadPoolExecutor()\n"
+            f"nwb_paths = list(upath.UPath(url) for url in executor.map(\n"
+            f"    lambda a: lazynwb.dandi._get_asset_s3_url(dandiset_id, a['asset_id'], version),\n"
+            f"    assets,\n"
+            f"))"
+        )
+    return (
+        f"nwb_paths = list(upath.UPath({source_spec.root_dir!r}).glob({source_spec.glob_pattern!r}))"
+    )
+
+
+@dataclasses.dataclass
+class AppContext:
+    source_manager: SourceManager
+
+
+def _get_app_context(ctx: fastmcp.Context) -> AppContext:
+    request_context = ctx.request_context
+    if request_context is None:
+        raise RuntimeError("Request context is not available")
+    return request_context.lifespan_context
+
+
+def _get_dataset_for_request(ctx: fastmcp.Context) -> DatasetHandle:
+    app_context = _get_app_context(ctx)
+    return app_context.source_manager.get_active_dataset(ctx.session_id)
+
+
+def _get_selected_source_for_request(ctx: fastmcp.Context) -> SourceSpec:
+    app_context = _get_app_context(ctx)
+    return app_context.source_manager.get_active_source(ctx.session_id)
+
+
+def _get_active_source_for_request(ctx: fastmcp.Context) -> SourceSpec:
+    selected_source = _get_selected_source_for_request(ctx)
+    if not selected_source.is_configured:
+        return selected_source
+    return _get_dataset_for_request(ctx).source_spec
+
+
+def _get_default_source_for_request(ctx: fastmcp.Context) -> SourceSpec:
+    return _get_app_context(ctx).source_manager.default_source
+
+
+def _format_dataset_status(dataset: DatasetHandle, *, default_source: SourceSpec) -> dict[str, Any]:
+    return {
+        "active_source": dataset.source_spec.to_dict(),
+        "is_default_source": dataset.source_spec == default_source,
+        "source_count": len(dataset.sources),
+    }
+
+
+def _format_source_status(
+    source_spec: SourceSpec,
+    *,
+    default_source: SourceSpec,
+    source_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "active_source": source_spec.to_dict(),
+        "is_default_source": source_spec == default_source,
+        "source_count": source_count,
+    }
+
+
+def _get_dandiset_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upath.UPath]]:
     """Get NWB file sources from a DANDI dandiset via presigned S3 URLs."""
-    assert config.dandiset_id is not None
-    dandiset_id = config.dandiset_id
-    version = config.dandiset_version
+    assert source_spec.dandiset_id is not None
+    dandiset_id = source_spec.dandiset_id
+    version = source_spec.dandiset_version
 
     logger.info(
         f"Fetching assets from DANDI dandiset {dandiset_id!r}"
@@ -179,11 +467,11 @@ def _get_dandiset_sources() -> list[upath.UPath]:
     assets = lazynwb.dandi._get_dandiset_assets(dandiset_id, version=version)
     logger.info(f"Found {len(assets)} total assets in dandiset {dandiset_id!r}")
 
-    if config.dandiset_path_filter:
+    if source_spec.dandiset_path_filter:
         original_count = len(assets)
-        assets = [a for a in assets if fnmatch.fnmatchcase(a["path"], config.dandiset_path_filter)]
+        assets = [a for a in assets if fnmatch.fnmatchcase(a["path"], source_spec.dandiset_path_filter)]
         logger.info(
-            f"Filtered to {len(assets)} assets matching {config.dandiset_path_filter!r}"
+            f"Filtered to {len(assets)} assets matching {source_spec.dandiset_path_filter!r}"
             f" (from {original_count})"
         )
 
@@ -191,8 +479,8 @@ def _get_dandiset_sources() -> list[upath.UPath]:
         raise ValueError(
             f"No assets found in dandiset {dandiset_id!r} version {version!r}"
             + (
-                f" matching path filter {config.dandiset_path_filter!r}"
-                if config.dandiset_path_filter
+                f" matching path filter {source_spec.dandiset_path_filter!r}"
+                if source_spec.dandiset_path_filter
                 else ""
             )
         )
@@ -217,46 +505,36 @@ def _get_dandiset_sources() -> list[upath.UPath]:
         raise ValueError(f"Failed to retrieve any S3 URLs from dandiset {dandiset_id!r}")
 
     logger.info(f"Retrieved {len(s3_urls)} S3 URLs from DANDI")
-    return [upath.UPath(url) for url in s3_urls]
+    resolved_source = dataclasses.replace(source_spec, dandiset_version=version)
+    return resolved_source, [upath.UPath(url) for url in s3_urls]
 
 
-@functools.cache
-def _get_local_or_remote_nwb_sources() -> list[upath.UPath]:
+def _get_local_or_remote_nwb_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upath.UPath]]:
     """Get NWB files from the local/S3 filesystem via glob pattern."""
+    if source_spec.root_dir is None or source_spec.glob_pattern is None:
+        raise ValueError(NO_SOURCE_CONFIGURED_MESSAGE)
     logger.info(
-        f"Searching for NWB files in {config.root_dir!r} with pattern {config.glob_pattern!r}"
+        f"Searching for NWB files in {source_spec.root_dir!r} with pattern {source_spec.glob_pattern!r}"
     )
-    nwb_paths = list(upath.UPath(config.root_dir).glob(config.glob_pattern))
+    nwb_paths = list(upath.UPath(source_spec.root_dir).glob(source_spec.glob_pattern))
     if not nwb_paths:
         raise ValueError(
-            f"No NWB files found in {config.root_dir!r} matching pattern {config.glob_pattern!r}"
+            f"No NWB files found in {source_spec.root_dir!r} matching pattern {source_spec.glob_pattern!r}"
         )
     logger.info(f"Found {len(nwb_paths)} data sources")
-    return nwb_paths
+    return source_spec, nwb_paths
 
 
-def _get_nwb_sources() -> list[upath.UPath]:
+def _get_nwb_sources(source_spec: SourceSpec) -> tuple[SourceSpec, list[upath.UPath]]:
     """Get NWB file sources, routing between DANDI and local/remote filesystem."""
-    if config.dandiset_id:
-        if config.root_dir != "data":
+    if source_spec.dandiset_id:
+        if source_spec.root_dir is not None:
             logger.warning(
-                f"Both dandiset_id={config.dandiset_id!r} and root_dir={config.root_dir!r} are set."
+                f"Both dandiset_id={source_spec.dandiset_id!r} and root_dir={source_spec.root_dir!r} are set."
                 " Using DANDI (root_dir/glob_pattern are ignored)."
             )
-        return _get_dandiset_sources()
-    return _get_local_or_remote_nwb_sources()
-
-
-@dataclasses.dataclass
-class AppContext:
-    db: pl.SQLContext
-
-
-class NWBFileSearchParameters(pydantic.BaseModel):
-    """Used to find NWB files in the filesystem."""
-
-    root_dir: str
-    glob_pattern: str
+        return _get_dandiset_sources(source_spec)
+    return _get_local_or_remote_nwb_sources(source_spec)
 
 
 def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
@@ -293,21 +571,22 @@ def create_sql_context_non_nwb(sources: Iterable[upath.UPath]) -> pl.SQLContext:
     return pl.SQLContext(frames=frames, eager=False)
 
 
-@contextlib.asynccontextmanager
-async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
-    """Manage server startup and shutdown lifecycle."""
-    # Initialize the SQL connection to the NWB files
-    logger.info("Initializing SQL connection to NWB files (may take a while)")
-    sources = _get_nwb_sources()
+def _build_dataset_handle(
+    source_spec: SourceSpec,
+    *,
+    infer_schema_length: int,
+    table_names: list[str] | None,
+) -> DatasetHandle:
+    logger.info(f"Initializing SQL connection for source: {source_spec.to_dict()}")
+    resolved_source_spec, sources = _get_nwb_sources(source_spec)
     if not any(".nwb" in str(s) for s in sources):
-        # If no NWB files found, create a non-NWB SQLContext
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
         sql_context = create_sql_context_non_nwb(sources)
     else:
         sql_context = lazynwb.get_sql_context(
             nwb_sources=sources,
-            infer_schema_length=config.infer_schema_length,
-            table_names=config.tables or None,
+            infer_schema_length=infer_schema_length,
+            table_names=table_names,
             exclude_timeseries=False,
             full_path=True,  # if False, NWB objects will be referenced by their names, not full paths, e.g. 'epochs' instead of '/intervals/epochs'
             disable_progress=True,
@@ -315,8 +594,21 @@ async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
             rename_general_metadata=True,  # renames the metadata in 'general' as 'session'
         )
     logger.info("SQL connection initialized successfully")
+    return DatasetHandle(source_spec=resolved_source_spec, sources=sources, db=sql_context)
+
+
+@contextlib.asynccontextmanager
+async def server_lifespan(server: fastmcp.FastMCP) -> AsyncIterator[AppContext]:
+    """Manage server startup and shutdown lifecycle."""
+    source_manager = SourceManager(
+        default_source=DEFAULT_SOURCE,
+        infer_schema_length=config.infer_schema_length,
+        tables=config.tables,
+    )
+    logger.info("Initializing startup dataset configuration")
+    source_manager.preload_default_dataset()
     try:
-        yield AppContext(db=sql_context)
+        yield AppContext(source_manager=source_manager)
     finally:
         await asyncio.to_thread(lazynwb.clear_cache)
 
@@ -338,7 +630,7 @@ def get_tables(ctx: fastmcp.Context) -> list[str]:
     experiment-level context (e.g. `experiment_description`, subject info).
     """
     logger.info("Fetching available tables from NWB files")
-    return ctx.request_context.lifespan_context.db.tables()
+    return _get_dataset_for_request(ctx).db.tables()
 
 
 @server.tool()
@@ -351,39 +643,73 @@ def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.Data
         raise ValueError("Table name cannot be empty")
     logger.info(f"Fetching schema for table: {table_name}")
     query = f"SELECT * FROM {format_table_name(table_name)} LIMIT 0"
-    lf: pl.LazyFrame = ctx.request_context.lifespan_context.db.execute(query)
+    lf: pl.LazyFrame = _get_dataset_for_request(ctx).db.execute(query)
     return lf.schema
 
 
 @server.tool()
-def nwb_file_search_code_snippet() -> str:
+def get_active_source(ctx: fastmcp.Context) -> dict[str, Any]:
+    """Returns the session's currently active dataset configuration."""
+    source_spec = _get_selected_source_for_request(ctx)
+    default_source = _get_default_source_for_request(ctx)
+    if not source_spec.is_configured:
+        return _format_source_status(source_spec, default_source=default_source)
+    dataset = _get_dataset_for_request(ctx)
+    return _format_dataset_status(dataset, default_source=default_source)
+
+
+@server.tool()
+def use_local_source(
+    root_dir: str,
+    ctx: fastmcp.Context,
+    glob_pattern: str = "**/*.nwb",
+) -> dict[str, Any]:
+    """Switch the current chat session to a local or remote filesystem dataset."""
+    dataset = _get_app_context(ctx).source_manager.set_active_source(
+        ctx.session_id,
+        SourceSpec.from_local(root_dir=root_dir, glob_pattern=glob_pattern),
+    )
+    return _format_dataset_status(dataset, default_source=_get_default_source_for_request(ctx))
+
+
+@server.tool()
+def use_dandiset_source(
+    dandiset_id: str,
+    ctx: fastmcp.Context,
+    dandiset_version: str | None = None,
+    dandiset_path_filter: str | None = None,
+) -> dict[str, Any]:
+    """Switch the current chat session to a DANDI dandiset."""
+    dataset = _get_app_context(ctx).source_manager.set_active_source(
+        ctx.session_id,
+        SourceSpec.from_dandiset(
+            dandiset_id=dandiset_id,
+            dandiset_version=dandiset_version,
+            dandiset_path_filter=dandiset_path_filter,
+        ),
+    )
+    return _format_dataset_status(dataset, default_source=_get_default_source_for_request(ctx))
+
+
+@server.tool()
+def reset_active_source(ctx: fastmcp.Context) -> dict[str, Any]:
+    """Reset the current chat session back to the startup-configured dataset."""
+    dataset = _get_app_context(ctx).source_manager.reset_active_source(ctx.session_id)
+    if dataset is None:
+        return _format_source_status(
+            _get_selected_source_for_request(ctx),
+            default_source=_get_default_source_for_request(ctx),
+        )
+    return _format_dataset_status(dataset, default_source=_get_default_source_for_request(ctx))
+
+
+@server.tool()
+def nwb_file_search_code_snippet(ctx: fastmcp.Context) -> str:
     """Returns a code snippet for finding the user's NWB files. `upath` is a 3rd-party package that implements the pathlib
     interface for local and cloud storage: when installing, its name on PyPI is `universal-pathlib`.
     For DANDI datasets, the snippet uses `lazynwb.dandi` to fetch presigned S3 URLs.
     """
-    if config.dandiset_id:
-        filter_lines = (
-            f"\nassets = [a for a in assets if fnmatch.fnmatch(a['path'], {config.dandiset_path_filter!r})]"
-            if config.dandiset_path_filter
-            else ""
-        )
-        return (
-            f"import concurrent.futures\n"
-            f"import fnmatch\n"
-            f"import lazynwb.dandi\n"
-            f"import upath\n"
-            f"\n"
-            f"dandiset_id = {config.dandiset_id!r}\n"
-            f"version = {config.dandiset_version!r}  # None = latest\n"
-            f"assets = lazynwb.dandi._get_dandiset_assets(dandiset_id, version=version)"
-            f"{filter_lines}\n"
-            f"executor = concurrent.futures.ThreadPoolExecutor()\n"
-            f"nwb_paths = list(upath.UPath(url) for url in executor.map(\n"
-            f"    lambda a: lazynwb.dandi._get_asset_s3_url(dandiset_id, a['asset_id'], version),\n"
-            f"    assets,\n"
-            f"))"
-        )
-    return f"nwb_paths = list(upath.UPath({config.root_dir!r}).glob({config.glob_pattern!r}))"
+    return _build_nwb_file_search_code_snippet(_get_active_source_for_request(ctx))
 
 
 @server.tool()
@@ -447,9 +773,7 @@ async def _execute_query(query: str, ctx: fastmcp.Context, allow_large_output: b
     if not query:
         raise ValueError("SQL query cannot be empty")
     logger.info(f"Executing query: {query}")
-    df: pl.DataFrame = ctx.request_context.lifespan_context.db.execute(
-        query, eager=True
-    )
+    df: pl.DataFrame = _get_dataset_for_request(ctx).db.execute(query, eager=True)
     if df.is_empty():
         logger.warning("SQL query returned no results")
         return "[]"
@@ -484,22 +808,22 @@ def _to_markdown(df: pl.DataFrame) -> str:
 
 
 @server.resource("dir://nwb_paths")
-def nwb_paths() -> list[str]:
+def nwb_paths(ctx: fastmcp.Context) -> list[str]:
     """List the available NWB files."""
-    return [p.as_posix() for p in _get_nwb_sources()]
+    return [p.as_posix() for p in _get_dataset_for_request(ctx).sources]
 
 
 @server.tool()
-def get_nwb_paths() -> list[str]:
+def get_nwb_paths(ctx: fastmcp.Context) -> list[str]:
     """Returns the list of all NWB file paths in the dataset (one file per session/subject).
     Call early to understand the scale of the dataset — file count shapes how to interpret
     aggregate query results (e.g. per-file breakdowns vs. overall averages).
     """
-    return [p.as_posix() for p in _get_nwb_sources()]
+    return [p.as_posix() for p in _get_dataset_for_request(ctx).sources]
 
 
 @server.prompt
-def analysis_report_prompt(query: str) -> str:
+def analysis_report_prompt(query: str, ctx: fastmcp.Context) -> str:
     """User prompt for creating an analysis report."""
     if not query:
         raise ValueError("Query cannot be empty")
@@ -526,12 +850,12 @@ Please provide an analysis report for a scientist posing the following query:
 3. Execute the analysis and provide a detailed report of the findings.
 </instructions>
 
-{ABOUT}
+{_build_about(_get_active_source_for_request(ctx))}
 """
 
 
 @server.prompt
-def general_prompt(query: str) -> str:
+def general_prompt(query: str, ctx: fastmcp.Context) -> str:
     """User prompt for general queries."""
     if not query:
         raise ValueError("Query cannot be empty")
@@ -555,7 +879,7 @@ Please provide a detailed response to a scientist posing the following query:
     analysis on a small subset of the data first. The user can then run the full analysis offline.
 </instructions>
 
-{ABOUT}                 
+{_build_about(_get_active_source_for_request(ctx))}                 
 """
 
 
