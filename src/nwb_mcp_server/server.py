@@ -488,9 +488,15 @@ def _get_dandiset_sources(
             f" (from {original_count})"
         )
 
+    original_count = len(assets)
+    assets = [a for a in assets if str(a["path"]).lower().endswith(".nwb")]
+    logger.info(
+        f"Filtered to {len(assets)} NWB assets ending in '.nwb' (from {original_count})"
+    )
+
     if not assets:
         raise ValueError(
-            f"No assets found in dandiset {dandiset_id!r} version {version!r}"
+            f"No NWB assets found in dandiset {dandiset_id!r} version {version!r}"
             + (
                 f" matching path filter {source_spec.dandiset_path_filter!r}"
                 if source_spec.dandiset_path_filter
@@ -598,7 +604,7 @@ def _build_dataset_handle(
 ) -> DatasetHandle:
     logger.info(f"Initializing SQL connection for source: {source_spec.to_dict()}")
     resolved_source_spec, sources = _get_nwb_sources(source_spec)
-    if not any(".nwb" in str(s) for s in sources):
+    if not source_spec.is_dandiset and not any(".nwb" in str(s).lower() for s in sources):
         logger.warning("No NWB files found, creating SQLContext for non-NWB sources")
         sql_context = create_sql_context_non_nwb(sources)
     else:

@@ -210,5 +210,77 @@ def test_build_nwb_file_search_code_snippet_uses_active_source_details():
         _build_nwb_file_search_code_snippet(SourceSpec())
 
 
+def test_get_dandiset_sources_filters_to_nwb_assets(monkeypatch):
+    import importlib
+
+    server_module = importlib.import_module("nwb_mcp_server.server")
+
+    monkeypatch.setattr(
+        server_module.lazynwb.dandi,
+        "_get_dandiset_assets",
+        lambda dandiset_id, version=None: [
+            {"path": "sub-1/sub-1_ecephys.nwb", "asset_id": "nwb-1"},
+            {"path": "README.md", "asset_id": "readme"},
+            {"path": "sub-1/sub-1_ecephys.zarr", "asset_id": "zarr"},
+        ],
+    )
+    monkeypatch.setattr(
+        server_module.lazynwb.dandi,
+        "_get_asset_s3_url",
+        lambda dandiset_id, asset_id, version=None: f"https://example.test/{asset_id}",
+    )
+
+    resolved_source, sources = server_module._get_dandiset_sources(
+        server_module.SourceSpec.from_dandiset(
+            dandiset_id="000363",
+            dandiset_version="0.231012.2129",
+        )
+    )
+
+    assert resolved_source.dandiset_version == "0.231012.2129"
+    assert [str(path) for path in sources] == ["https://example.test/nwb-1"]
+
+
+def test_build_dataset_handle_treats_dandiset_blob_urls_as_nwb(monkeypatch):
+    import importlib
+
+    server_module = importlib.import_module("nwb_mcp_server.server")
+
+    requested_source = server_module.SourceSpec.from_dandiset(
+        dandiset_id="000363",
+        dandiset_version="0.231012.2129",
+    )
+    opaque_blob_url = "https://dandiarchive.s3.amazonaws.com/blobs/45d/3e8/blob-id"
+
+    monkeypatch.setattr(
+        server_module,
+        "_get_nwb_sources",
+        lambda source_spec: (source_spec, [server_module.upath.UPath(opaque_blob_url)]),
+    )
+
+    captured = {}
+
+    def fake_get_sql_context(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"kind": "nwb"}
+
+    def fail_non_nwb(_sources):
+        raise AssertionError("Should not create a non-NWB SQL context for DANDI blob URLs")
+
+    monkeypatch.setattr(server_module.lazynwb, "get_sql_context", fake_get_sql_context)
+    monkeypatch.setattr(server_module, "create_sql_context_non_nwb", fail_non_nwb)
+
+    dataset = server_module._build_dataset_handle(
+        requested_source,
+        infer_schema_length=2,
+        table_names=["units"],
+    )
+
+    assert dataset.db == {"kind": "nwb"}
+    assert captured["kwargs"]["nwb_sources"] == [server_module.upath.UPath(opaque_blob_url)]
+    assert captured["kwargs"]["infer_schema_length"] == 2
+    assert captured["kwargs"]["table_names"] == ["units"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
