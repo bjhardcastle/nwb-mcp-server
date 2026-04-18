@@ -19,7 +19,7 @@ import io
 import logging
 import threading
 from collections.abc import AsyncIterator, Iterable
-from typing import Any
+from typing import Any, cast
 
 import fastmcp
 import fsspec.config
@@ -643,7 +643,7 @@ def get_table_schema(table_name: str, ctx: fastmcp.Context) -> dict[str, pl.Data
         raise ValueError("Table name cannot be empty")
     logger.info(f"Fetching schema for table: {table_name}")
     query = f"SELECT * FROM {format_table_name(table_name)} LIMIT 0"
-    lf: pl.LazyFrame = _get_dataset_for_request(ctx).db.execute(query)
+    lf = cast(pl.LazyFrame, _get_dataset_for_request(ctx).db.execute(query))
     return lf.schema
 
 
