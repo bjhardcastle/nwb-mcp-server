@@ -56,6 +56,7 @@ class SourceSpec:
     dandiset_id: str | None = None
     dandiset_version: str | None = None
     dandiset_path_filter: str | None = None
+    anon: bool = False
 
     def __post_init__(self) -> None:
         if self.root_dir is not None and not self.root_dir:
@@ -92,7 +93,7 @@ class SourceSpec:
     def is_configured(self) -> bool:
         return self.is_dandiset or self.is_filesystem
 
-    def to_dict(self) -> dict[str, str | None]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "root_dir": self.root_dir,
@@ -100,6 +101,7 @@ class SourceSpec:
             "dandiset_id": self.dandiset_id,
             "dandiset_version": self.dandiset_version,
             "dandiset_path_filter": self.dandiset_path_filter,
+            "anon": self.anon,
         }
 
     @classmethod
@@ -117,9 +119,12 @@ class SourceSpec:
 
     @classmethod
     def from_local(
-        cls, root_dir: str, glob_pattern: str = DEFAULT_GLOB_PATTERN
+        cls,
+        root_dir: str,
+        glob_pattern: str = DEFAULT_GLOB_PATTERN,
+        anon: bool = False,
     ) -> "SourceSpec":
-        return cls(root_dir=root_dir, glob_pattern=glob_pattern)
+        return cls(root_dir=root_dir, glob_pattern=glob_pattern, anon=anon)
 
 
 class ServerConfig(pydantic_settings.BaseSettings):
@@ -279,9 +284,14 @@ config = ServerConfig()  # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
 DEFAULT_SOURCE = config.default_source_spec()
 
+def _configure_anon(anon: bool) -> None:
+    logger.info(f"Setting anonymous S3 access: {anon}")
+    fsspec.config.conf["s3"] = {"anon": anon}
+    lazynwb.config.anon = True if anon else None
+
+
 if config.anon:
-    logger.info("Configuring fsspec for anonymous S3 access")
-    fsspec.config.conf["s3"] = {"anon": True}
+    _configure_anon(True)
 
 UNATTENDED_RULE = (
     (
@@ -603,6 +613,8 @@ def _build_dataset_handle(
     table_names: list[str] | None,
 ) -> DatasetHandle:
     logger.info(f"Initializing SQL connection for source: {source_spec.to_dict()}")
+    if source_spec.anon:
+        _configure_anon(True)
     resolved_source_spec, sources = _get_nwb_sources(source_spec)
     if not source_spec.is_dandiset and not any(
         ".nwb" in str(s).lower() for s in sources
@@ -692,11 +704,14 @@ def use_local_source(
     root_dir: str,
     ctx: fastmcp.Context,
     glob_pattern: str = "**/*.nwb",
+    anon: bool = False,
 ) -> dict[str, Any]:
-    """Switch the current chat session to a local or remote filesystem dataset."""
+    """Switch the current chat session to a local or remote filesystem dataset.
+    Set anon=True for anonymous access to public S3 buckets without credentials.
+    """
     dataset = _get_app_context(ctx).source_manager.set_active_source(
         ctx.session_id,
-        SourceSpec.from_local(root_dir=root_dir, glob_pattern=glob_pattern),
+        SourceSpec.from_local(root_dir=root_dir, glob_pattern=glob_pattern, anon=anon),
     )
     return _format_dataset_status(
         dataset, default_source=_get_default_source_for_request(ctx)
