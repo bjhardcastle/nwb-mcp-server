@@ -284,6 +284,7 @@ config = ServerConfig()  # type: ignore[call-arg]
 logger.info(f"Configuration loaded: {config}")
 DEFAULT_SOURCE = config.default_source_spec()
 
+
 def _configure_anon(anon: bool) -> None:
     logger.info(f"Setting anonymous S3 access: {anon}")
     fsspec.config.conf["s3"] = {"anon": anon}
